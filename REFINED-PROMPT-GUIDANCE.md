@@ -9,7 +9,7 @@
 - Verify file integrity after edits before proceeding
 
 ### Development Workflow
-- **Test-driven approach**: Write tests first when possible, ensure high coverage (80%+)
+- **Test-driven approach**: Write tests first when possible, ensure high coverage (70%+)
 - **Atomic changes**: Solve one issue at a time, verify it works, then iterate
 - **Verification before deployment**: Always confirm tests pass before suggesting to run applications
 - Avoid commands that hang indefinitely (servers, etc.) - defer these to me
@@ -18,7 +18,7 @@
 - Use absolute paths when referencing project locations (all projects in `/Users/zeblith/reporoot`)
 - Provide clear explanations of what you're doing and why
 - If you encounter conflicting instructions or unclear requirements, highlight them and suggest resolutions
-- Maintain TODO sections in README with "Known Issues" and "Future Work"
+- Maintain a comprehensive record of any identified "Known Issues" or areas for "Future Work" in a file called PROJMAN.md
 
 ## What's Changed from Previous Guidance
 
