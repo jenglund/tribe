@@ -1,0 +1,141 @@
+Below is a first-pass project brief you can refine with Albert.
+It is split into: 1) Core user stories, 2) questions to surface blind spots, 3) high-level system/data design, 4) key technical decisions & testing strategy, and 5) next steps for an open-source repo run by humans and AI agents.
+
+1 · Core user stories (CRUD + happy paths & edge cases)
+ID	“As a …”	“I want to …”	“So that …”
+U-01	Unauthenticated visitor	Create an account with Google OAuth (no password)	I can start using Tribe in <30 seconds
+U-02	User	Set my display name, avatar & home location/timezone	filters that depend on distance & local time work
+U-03	User	Create a personal List	I can store places/activities just for me
+U-04	User	Share my List with another User or a Tribe	others can pull from it without editing rights
+U-05	User	Accept/decline an invitation to join a Tribe (1-8 members)	we can collaborate privately
+U-06	Tribe member	Create a Tribe List that any member may edit	group curation is friction-free
+U-07	List owner	Mark a List or List Item “soft deleted” and undo within 30 days	mistakes aren’t fatal
+U-08	List editor	Add metadata to a List Item: tags, category, location, vegetarian/vegan flags, opening hours, URL	filters work accurately
+U-09	User	Log a Visit to a List Item with date, duration, companions, notes & rating	future filters like “not in last 2 months” work
+U-10	User	Start a Decision Session by selecting 1 + Lists, setting filters (distance, time-open, diet, category, etc.) and choosing K · N + M parameters	Tribe can pick tonight’s spot
+U-11	Session participant	Swipe/tap to eliminate up to K items per round	I get a voice in the decision
+U-12	System	When eliminations finish, either present remaining M options or randomly pick the final choice	session resolves cleanly
+U-13	User	See history of past Decision Sessions & Visits (who, when, outcome)	we avoid repeats & remember good times
+U-14	User	Export my data (JSON/CSV)	I can self-host or leave with my data
+U-15	Instance admin	Configure OAuth keys, e-mail (optional), permitted origin hosts, rate limits	deployment is safe
+U-16	Open-source contributor (human or AI)	Run docker compose up, seed demo data, run test suite, and view Storybook UI	on-ramp is <10 minutes
+
+2 · Questions to tighten requirements
+Item scope – Are Lists always “restaurants & activities”, or truly arbitrary text strings?
+
+Categories & tags – Pre-defined enum (restaurant, bar, hike, TV-show…) or free-form?
+
+Dietary prefs – Stored at Item level only, or also per-User as standing preferences?
+
+Opening-hours source – Manual entry? scrape? 3rd-party API later?
+
+Time-to-travel – Will we ask users to enter ETA manually, calculate with straight-line distance, or integrate with mapping later?
+
+Notification channel – E-mail only (since we already collect the OAuth e-mail) or push/SMS later?
+
+Concurrency – Does everyone eliminate items in real time on one screen, or asynchronously?
+
+K · N + M defaults – Hard-coded (e.g., pairs default to 5-3-1) or per-Tribe settings?
+
+Leaving a Tribe – Does that revoke access to their shared Lists and history?
+
+GDPR-style deletion – When a User deletes account, do we anonymize their past Visits?
+
+Multitenancy – One DB per install, or support multiple “instances” in the same DB?
+
+Pluggable auth – Any appetite for Apple / Microsoft OAuth?
+
+Offline first? – Mobile PWA with local cache, or strictly online for v1?
+
+3 · High-level architecture & data model (PostgreSQL)
+3.1 Component diagram
+rust
+Copy
+Edit
+React + TypeScript SPA
+        │  (tRPC / REST / OpenAPI)
+┌───────▼──────────┐
+│  Go API service  │— JWT session cookies
+│  (chi/echo/fiber)│
+└───────▼──────────┘
+   PostgreSQL 15
+       (sqlc / gorm / sqlx)
+
++ optional: Redis for session & cache,  
+  MinIO/S3 for images, Traefik for TLS.
+Everything lives in Docker so a self-hoster can run docker compose up -d.
+
+3.2 Suggested tables (snake_case, timestamptz default now())
+Table	Key cols & types	Notes
+users	id UUID PK, email TEXT UNIQUE, display_name TEXT, avatar_url TEXT, tz TEXT, auth_provider TEXT, created_at, deleted_at	soft delete via deleted_at
+tribes	id UUID, name TEXT, creator_id FK→users, created_at, deleted_at	
+tribe_members	tribe_id FK, user_id FK, role SMALLINT (0=member, 1=owner), joined_at, PK (tribe_id, user_id)	
+lists	id UUID, owner_type SMALLINT (0=user, 1=tribe), owner_id UUID, name TEXT, description TEXT, is_external BOOL, external_source TEXT NULL, sync_state JSONB, created_at, deleted_at	
+list_items	id UUID, list_id FK, title TEXT, notes TEXT, category TEXT, tags TEXT[], lat NUMERIC(9,6), lon NUMERIC(9,6), vegetarian BOOL, vegan BOOL, hours JSONB, created_at, deleted_at	PostGIS optional later
+visits	id UUID, list_item_id FK, visited_by FK→users, tribe_id FK NULL, visited_at DATE, duration_mins INT NULL, rating SMALLINT, notes TEXT	
+decision_sessions	id UUID, tribe_id FK, created_by FK→users, filter_params JSONB, algo_params JSONB, status SMALLINT (0=active,1=completed), result_item_id UUID NULL, created_at, completed_at	
+decision_items	session_id FK, item_id FK, round SMALLINT, eliminated_by UUID NULL, eliminated_at TIMESTAMPTZ NULL, PK (session_id,item_id)	
+list_shares	list_id FK, target_type SMALLINT (0=user, 1=tribe), target_id UUID, permission SMALLINT (0=read, 1=write), shared_by UUID, shared_at, PK (list_id,target_type,target_id)	
+
+All foreign keys are ON DELETE SET NULL to preserve history; real deletes cascade only on deleted_at IS NOT NULL vacuum job.
+
+4 · Technical choices, testing & CI
+4.1 Backend (Go)
+Area	Choice	Rationale
+HTTP router	chi or go-chi/chi	tiny, idiomatic, middlewares ready
+DB access	sqlc-generated query layer or gorm	type-safe SQL w/ migrations
+Auth	OAuth 2 PKCE <> Google; JWT w/ SameSite cookies	password-less, home-host friendly
+Config	envconfig or viper	12-factor
+Testing	go test, httptest, Dockertest for Postgres	fast unit + integration
+Docs	OpenAPI yaml plus mock.io examples	front-end codegen
+
+4.2 Frontend (React + TS)
+React Router 6, React Query (TanStack) for API calls & caching
+
+shadcn/ui + Tailwind for consistent UI
+
+Zustand or Redux Toolkit if global state grows
+
+Storybook for component snapshots
+
+Vitest + React Testing Library for unit/DOM tests
+
+Playwright for e2e flows (login, create list, run decision)
+
+4.3 Dev & CI
+Lint/format – golangci-lint, prettier, eslint
+
+Commit style – Conventional Commits → semantic-release changelogs
+
+CI – GitHub Actions: test, lint, build Docker image, push to GHCR
+
+CD – Optional: Fly.io, Render or bare-metal script (docker compose pull && up)
+
+4.4 AI contributor guidelines
+Each PR must update relevant OpenAPI / SQL migrations / Storybook if schema or contract changes.
+
+Include unit tests with ≥ 80 % coverage for new handlers.
+
+Never hard-code secrets; use env vars with sensible defaults for local dev.
+
+Follow the repo’s Architecture Decision Records (/docs/adr/XXXX-*.md).
+
+5 · Suggested next steps
+Answer the open questions in §2 so the schema doesn’t drift.
+
+Write a docs/01-product-vision.md capturing the user stories table verbatim.
+
+Create an ADR choosing REST + tRPC or GraphQL; stick to it.
+
+Generate initial sqlc migrations & Go models; scaffold CRUD handlers.
+
+Spin up a minimal React SPA with Google sign-in and heartbeat call.
+
+Add the Decision Session algorithm as a pure Go package with unit tests (easier to TDD).
+
+Enable GitHub Codespaces so new contributors (human or AI) are productive instantly.
+
+With this structure in place you and Albert can iterate confidently, knowing each slice of work maps cleanly to a user story and a table row.
+
+Happy to dive deeper
+Let me know which section you’d like to drill into next—e.g., fleshing out Decision-Session algorithm flow, writing the first SQL migration, or drafting CONTRIBUTING.md for AI agents.
