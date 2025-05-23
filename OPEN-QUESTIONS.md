@@ -5,55 +5,116 @@ This document contains ambiguities, unclear specifications, unresolved questions
 ## Database Design Conflicts
 
 ### Naming Conventions
-- [ ] **Decision needed**: Snake_case (chatgpto3, claude4) vs camelCase (chatgpt45, gemini25) for database columns
-- [ ] **Decision needed**: Table naming conventions - plural vs singular (users vs user)
+- [x] **Decision made**: Snake_case for database columns (e.g., `tribe_name`, `created_at`)
+- [x] **Decision made**: Plural table names (e.g., `users`, `tribes`, `lists`)
 
 ### Primary Key Strategy
-- [ ] **Decision needed**: UUID vs SERIAL/AUTO_INCREMENT primary keys
-  - Claude4 and ChatGPT45 prefer UUIDs
-  - Gemini25 suggests "UUIDs for distributed systems, integers for simplicity"
-  - ChatGPTo3 uses UUIDs
+- [x] **Decision made**: UUID primary keys for all entities
+  - Provides better support for distributed systems and external sync
+  - Avoids sequential ID exposure in URLs
 
 ### List Ownership Model
-- [ ] **Conflict**: Unified lists table vs separate personal/tribe lists
-  - Claude4: Unified lists table with type field and owner_id/tribe_id
-  - ChatGPT45: Unified with owner_user_id/owner_tribe_id (both nullable)
-  - Gemini25: Suggests unified with list_visibility_type
-  - ChatGPTo3: Unified with owner_type and owner_id
+- [x] **Decision made**: Use ChatGPTo3's approach - unified lists table with `owner_type` and `owner_id`
+  - `owner_type`: 'user' | 'tribe'
+  - `owner_id`: UUID referencing either users.id or tribes.id
+  - Simpler than multiple nullable columns
 
 ### Soft Deletion Strategy
-- [ ] **Clarification needed**: Consistent soft deletion implementation across all entities
-- [ ] **Decision needed**: Vacuum/cleanup strategy for soft-deleted records
-- [ ] **Question**: Should soft-deleted entities cascade delete relationships?
+- [ ] **Deferred**: May not implement soft deletion for MVP
+  - Hard deletes with confirmation prompts may be sufficient
+  - Database backups can serve as recovery mechanism
+  - Will revisit if user feedback indicates need for "undo" functionality
 
 ## Authentication & Authorization
 
 ### OAuth Provider Support
-- [ ] **Priority clarification**: Which OAuth providers beyond Google?
-  - Claude4: Mentions "other providers" as future
-  - ChatGPT45: "Apple/Microsoft OAuth?"
-  - All agree Google is primary
+- [x] **Decision made**: Google OAuth only for initial implementation
+  - Design interface to support multiple providers in future
+  - Interface should extract email address as primary identifier
+  - Include "Dev/Test User Login" mode for development environment
+    - Active only in development mode
+    - Allows typing in any email address to "login"
+    - Implements same interface as OAuth providers
 
 ### Session Management
-- [ ] **Technical decision**: JWT tokens vs session cookies vs hybrid approach
-- [ ] **Question**: Token refresh strategy and expiration times
-- [ ] **Question**: How to handle concurrent sessions across devices?
+- [ ] **Analysis needed**: JWT tokens vs session cookies vs hybrid approach
+
+#### Detailed Comparison
+
+**JWT Tokens (Stateless)**
+- **Pros**: 
+  - Stateless - no server-side session storage needed
+  - Works well with microservices (if we scale later)
+  - Contains user claims directly
+  - Works across multiple devices naturally
+- **Cons**: 
+  - Cannot revoke until expiration
+  - Larger payload in every request
+  - Need refresh token mechanism for security
+- **Our Use Case Fit**: ⭐⭐⭐⭐ (Good - supports concurrent devices, simple for monolith)
+
+**Session Cookies (Stateful)**
+- **Pros**: 
+  - Can revoke immediately 
+  - Smaller request overhead
+  - More secure for sensitive apps
+  - Traditional web app approach
+- **Cons**: 
+  - Requires server-side session storage (Redis/DB)
+  - More complex for multiple devices
+  - Additional infrastructure dependency
+- **Our Use Case Fit**: ⭐⭐⭐ (Okay - more complex for our scale)
+
+**Hybrid Approach (JWT + Refresh Tokens)**
+- **Pros**: 
+  - Short-lived JWTs (15-30 min) with refresh tokens
+  - Can revoke refresh tokens
+  - Good security/usability balance
+- **Cons**: 
+  - Most complex implementation
+  - Still need some server-side storage for refresh tokens
+- **Our Use Case Fit**: ⭐⭐⭐⭐⭐ (Best - security + usability + supports our needs)
+
+**Recommendation**: Hybrid approach with:
+- Short-lived JWT access tokens (30 minutes)
+- Longer-lived refresh tokens (7 days) stored server-side
+- Automatic refresh in frontend
+- Support for multiple concurrent sessions
+
+- [x] **Decision made**: Support concurrent sessions across devices
+  - Users should be able to interact from desktop and mobile simultaneously
+  - All valid sessions should be accepted
 
 ### Authorization Levels
-- [ ] **Clarification needed**: Exact permission model for shared lists
-  - Read-only vs read-write sharing
-  - Can shared list permissions be revoked?
-  - What happens to shared lists when user leaves tribe?
+- [x] **Decision made**: List sharing permissions model
+  - **Read-only sharing**: Shared lists are view-only for recipients
+  - **Owner-only modifications**: Only list owners can edit or re-share lists
+  - **List ownership**: User owns personal lists, any tribe member owns tribe lists
+  - **No re-sharing**: Recipients cannot re-share lists (designed to support, not implemented initially)
+  - **Revocable shares**: List owners can revoke sharing at any time
+  - **Tribe departure rules**:
+    - User loses access to tribe's internal lists
+    - User loses access to lists shared with the tribe (unless separately shared with user)
+    - User's lists shared with tribe default to unshared, with option to preserve sharing
 
 ## Decision-Making Algorithm
 
 ### KN+M Parameter Defaults
-- [ ] **Question**: Default K and M values for different tribe sizes
-- [ ] **Question**: Maximum and minimum values for K and M
-- [ ] **Algorithm**: How to handle edge cases:
-  - [ ] What if filtered results < K*N + M?
-  - [ ] What if tribe member doesn't participate in elimination?
-  - [ ] What if multiple people try to eliminate the same item?
+- [x] **Decision made**: Default values and configuration
+  - **N**: Always equals tribe size (1-8 members)
+  - **K**: Default 2 eliminations per person (configurable per tribe and per session)
+  - **M**: Default 3 final options for random selection (configurable per tribe and per session)
+  - **Configuration**: Easy to change defaults at tribe level and override per decision session
+
+### Algorithm for Insufficient Results
+- [x] **Decision made**: Strategy when filtered results (R) < K*N + M
+  - If K*N + M > R, apply reduction algorithm:
+    1. If K > 2: reduce K by 1, check again
+    2. If M > 3: reduce M by 1, check again  
+    3. If K > 1: reduce K by 1, check again
+    4. If M > 1: reduce M by 1, check again
+    5. Else: set K=0, M=R (final fallback)
+  - Skip algorithm if R = 0 (no valid results)
 
 ### Filtering Priority
 - [ ] **Specification needed**: Order of filter application and conflicts
@@ -95,13 +156,14 @@ This document contains ambiguities, unclear specifications, unresolved questions
 ## Sharing and Permissions
 
 ### List Sharing Scope
-- [ ] **Question**: Can personal lists be shared with individual users or only tribes?
-- [ ] **Question**: Can tribe lists be shared outside the tribe?
-- [ ] **Clarification**: What permissions do shared list recipients have?
+- [x] **Decision made**: Personal lists can be shared with users or tribes
+- [x] **Decision made**: Tribe lists cannot be shared outside the tribe
+- [x] **Decision made**: Recipients have read-only permissions
 
 ### Data Privacy
 - [ ] **Important**: When user leaves tribe or deletes account:
-  - [ ] What happens to their contributed list items?
+  - [x] **Resolved**: Tribe departure behavior defined above
+  - [ ] What happens to their contributed list items in tribe lists?
   - [ ] What happens to their visit history?
   - [ ] What happens to lists they created but shared?
   - [ ] GDPR-style deletion requirements?
@@ -109,9 +171,9 @@ This document contains ambiguities, unclear specifications, unresolved questions
 ## Technical Architecture
 
 ### API Design
-- [ ] **Decision needed**: REST vs GraphQL vs hybrid approach
-  - User specified GraphQL preference
-  - Need to determine where GraphQL is appropriate vs REST
+- [x] **Decision confirmed**: Hybrid GraphQL/REST approach
+  - GraphQL for complex queries and mutations
+  - REST for simple operations (auth, file uploads, health checks)
 
 ### Real-time Features
 - [ ] **Scope question**: Which features need real-time updates?
@@ -204,5 +266,30 @@ This document contains ambiguities, unclear specifications, unresolved questions
 ### Extension Points
 - [ ] **Question**: Plugin architecture for custom filters or integrations?
 - [ ] **Question**: API for third-party integrations?
+
+## Decisions Made Summary
+
+**Database Design:**
+- snake_case column naming
+- Plural table names  
+- UUID primary keys
+- Unified lists table with owner_type/owner_id
+- Soft deletion deferred (may use hard deletes)
+
+**Authentication:**
+- Google OAuth with extensible interface
+- Dev/test login mode for development
+- Concurrent sessions supported
+- Hybrid JWT approach recommended
+
+**Permissions:**
+- Read-only list sharing
+- Owner-only modifications and re-sharing
+- Revocable shares
+- Complex tribe departure rules
+
+**Decision Algorithm:**
+- N = tribe size, K = 2, M = 3 (configurable)
+- Reduction algorithm for insufficient results
 
 These questions should be resolved through discussion and decision-making before proceeding with detailed implementation planning. 

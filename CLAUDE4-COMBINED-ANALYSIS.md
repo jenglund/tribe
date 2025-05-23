@@ -147,7 +147,8 @@ src/
 ### Core Design Decisions
 - **Primary Keys**: UUIDs for all entities (better for distributed systems and external sync)
 - **Naming**: snake_case for database columns (PostgreSQL convention)
-- **Soft Deletion**: deleted_at timestamp for all major entities
+- **Table Names**: Plural form (users, tribes, lists, etc.)
+- **Soft Deletion**: Deferred for MVP - may use hard deletes with confirmation prompts
 - **Timestamps**: All tables include created_at, updated_at with timezone support
 
 ### Schema Definition
@@ -159,14 +160,13 @@ CREATE TABLE users (
     email VARCHAR(255) UNIQUE NOT NULL,
     name VARCHAR(255) NOT NULL,
     avatar_url VARCHAR(500),
-    oauth_provider VARCHAR(50) NOT NULL, -- 'google', 'email' (future)
+    oauth_provider VARCHAR(50) NOT NULL, -- 'google', 'dev' (for development)
     oauth_id VARCHAR(255) NOT NULL,
     dietary_preferences JSONB DEFAULT '[]'::jsonb, -- ['vegetarian', 'vegan', 'gluten_free']
     location_preferences JSONB, -- Default location, max distance, etc.
     email_verified BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    deleted_at TIMESTAMPTZ,
     UNIQUE(oauth_provider, oauth_id)
 );
 ```
@@ -179,10 +179,9 @@ CREATE TABLE tribes (
     description TEXT,
     creator_id UUID NOT NULL REFERENCES users(id),
     max_members INTEGER DEFAULT 8,
-    decision_preferences JSONB DEFAULT '{}'::jsonb, -- Default K, M values, etc.
+    decision_preferences JSONB DEFAULT '{"k": 2, "m": 3}'::jsonb, -- Default K=2, M=3
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    deleted_at TIMESTAMPTZ
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 ```
 
@@ -198,24 +197,18 @@ CREATE TABLE tribe_memberships (
 );
 ```
 
-#### Lists Table (Unified Design)
+#### Lists Table (Using owner_type/owner_id approach)
 ```sql
 CREATE TABLE lists (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(255) NOT NULL,
     description TEXT,
-    list_type VARCHAR(50) NOT NULL, -- 'personal', 'tribe'
-    owner_user_id UUID REFERENCES users(id), -- NULL for tribe lists
-    owner_tribe_id UUID REFERENCES tribes(id), -- NULL for personal lists
+    owner_type VARCHAR(50) NOT NULL, -- 'user', 'tribe'
+    owner_id UUID NOT NULL, -- References users.id or tribes.id based on owner_type
     category VARCHAR(100), -- 'restaurants', 'movies', 'activities', etc.
     metadata JSONB DEFAULT '{}'::jsonb, -- Flexible metadata
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    deleted_at TIMESTAMPTZ,
-    CONSTRAINT check_list_ownership CHECK (
-        (list_type = 'personal' AND owner_user_id IS NOT NULL AND owner_tribe_id IS NULL) OR
-        (list_type = 'tribe' AND owner_user_id IS NULL AND owner_tribe_id IS NOT NULL)
-    )
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 ```
 
@@ -234,19 +227,18 @@ CREATE TABLE list_items (
     external_id VARCHAR(255), -- For future external API sync
     added_by_user_id UUID NOT NULL REFERENCES users(id),
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    deleted_at TIMESTAMPTZ
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 ```
 
-#### List Shares Table
+#### List Shares Table (Read-only sharing only)
 ```sql
 CREATE TABLE list_shares (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     list_id UUID NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
     shared_with_user_id UUID REFERENCES users(id) ON DELETE CASCADE,
     shared_with_tribe_id UUID REFERENCES tribes(id) ON DELETE CASCADE,
-    permission_level VARCHAR(50) DEFAULT 'read', -- 'read', 'write'
+    permission_level VARCHAR(50) DEFAULT 'read', -- Only 'read' for now
     shared_by_user_id UUID NOT NULL REFERENCES users(id),
     shared_at TIMESTAMPTZ DEFAULT NOW(),
     CONSTRAINT check_share_target CHECK (
@@ -284,7 +276,7 @@ CREATE TABLE decision_sessions (
     name VARCHAR(255),
     status VARCHAR(50) DEFAULT 'configuring', -- 'configuring', 'eliminating', 'completed', 'cancelled'
     filters JSONB DEFAULT '{}'::jsonb, -- Applied filter criteria
-    algorithm_params JSONB NOT NULL, -- {k: 2, n: 2, m: 1, initial_count: 5}
+    algorithm_params JSONB NOT NULL, -- {k: 2, n: 2, m: 3, initial_count: 7}
     initial_candidates JSONB DEFAULT '[]'::jsonb, -- Array of list_item_ids
     current_candidates JSONB DEFAULT '[]'::jsonb, -- Remaining after eliminations
     final_selection_id UUID REFERENCES list_items(id),
@@ -325,10 +317,9 @@ CREATE INDEX idx_users_email ON users(email);
 CREATE INDEX idx_users_oauth ON users(oauth_provider, oauth_id);
 CREATE INDEX idx_tribe_memberships_user ON tribe_memberships(user_id);
 CREATE INDEX idx_tribe_memberships_tribe ON tribe_memberships(tribe_id);
-CREATE INDEX idx_lists_owner_user ON lists(owner_user_id) WHERE deleted_at IS NULL;
-CREATE INDEX idx_lists_owner_tribe ON lists(owner_tribe_id) WHERE deleted_at IS NULL;
-CREATE INDEX idx_lists_type ON lists(list_type) WHERE deleted_at IS NULL;
-CREATE INDEX idx_list_items_list ON list_items(list_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_lists_owner ON lists(owner_type, owner_id);
+CREATE INDEX idx_lists_category ON lists(category);
+CREATE INDEX idx_list_items_list ON list_items(list_id);
 CREATE INDEX idx_list_items_category ON list_items(category);
 CREATE INDEX idx_list_items_tags ON list_items USING GIN(tags);
 CREATE INDEX idx_activity_history_user ON activity_history(user_id);
@@ -336,12 +327,9 @@ CREATE INDEX idx_activity_history_item ON activity_history(list_item_id);
 CREATE INDEX idx_activity_history_date ON activity_history(completed_at);
 CREATE INDEX idx_decision_sessions_tribe ON decision_sessions(tribe_id);
 CREATE INDEX idx_decision_sessions_status ON decision_sessions(status);
-
--- Soft delete indexes
-CREATE INDEX idx_users_active ON users(id) WHERE deleted_at IS NULL;
-CREATE INDEX idx_tribes_active ON tribes(id) WHERE deleted_at IS NULL;
-CREATE INDEX idx_lists_active ON lists(id) WHERE deleted_at IS NULL;
-CREATE INDEX idx_list_items_active ON list_items(id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_list_shares_list ON list_shares(list_id);
+CREATE INDEX idx_list_shares_user ON list_shares(shared_with_user_id);
+CREATE INDEX idx_list_shares_tribe ON list_shares(shared_with_tribe_id);
 
 -- Geospatial index for location queries (if PostGIS is available)
 -- CREATE INDEX idx_list_items_location ON list_items USING GIST((location->>'lat')::float, (location->>'lng')::float);
@@ -604,193 +592,126 @@ POST   /api/v1/uploads/avatar       # Upload user avatar
 POST   /api/v1/uploads/list-image   # Upload list item image
 ```
 
+## Authentication & Authorization
+
+### OAuth Strategy
+- **Primary Provider**: Google OAuth
+- **Development Mode**: Dev/Test login allowing email input
+- **Extensible Design**: Interface to support multiple providers
+- **Key Requirements**: Extract verified email address
+
+### Session Management (Recommended: Hybrid JWT)
+- **Access Tokens**: Short-lived JWT (30 minutes)
+- **Refresh Tokens**: Longer-lived (7 days), stored server-side
+- **Concurrent Sessions**: Supported across multiple devices
+- **Auto-refresh**: Frontend handles token refresh automatically
+
+### Authorization Model
+- **List Ownership**: Users own personal lists, any tribe member can modify tribe lists
+- **Sharing**: Read-only sharing only
+- **Revocation**: List owners can revoke shares at any time
+- **Tribe Departure**: Complex rules for maintaining/losing access to shared content
+
 ## Decision-Making Algorithm (Enhanced)
 
-### Filter Engine
+### Default Parameters
 ```go
-type FilterEngine struct {
-    db repository.Database
+type DecisionDefaults struct {
+    K int `json:"k"` // Default: 2 eliminations per person
+    M int `json:"m"` // Default: 3 final options for random selection
+    N int `json:"n"` // Always equals tribe size (1-8)
 }
 
-type FilterCriteria struct {
-    Categories          []string    `json:"categories"`
-    ExcludeCategories   []string    `json:"exclude_categories"`
-    DietaryRequirements []string    `json:"dietary_requirements"`
-    MaxDistance         *float64    `json:"max_distance"`
-    CenterLocation      *Location   `json:"center_location"`
-    ExcludeRecentDays   *int        `json:"exclude_recent_days"`
-    MustBeOpenFor       *int        `json:"must_be_open_for"`
-    PriceRange          *PriceRange `json:"price_range"`
-    Tags                []string    `json:"tags"`
-    ExcludeTags         []string    `json:"exclude_tags"`
-    UserID              string      `json:"user_id"`
-    TribeID             *string     `json:"tribe_id"`
-}
-
-func (fe *FilterEngine) ApplyFilters(ctx context.Context, items []ListItem, criteria FilterCriteria) ([]ListItem, error) {
-    // Apply filters in order of selectivity (most restrictive first)
-    filtered := items
-    
-    // 1. Category filters (high selectivity)
-    if len(criteria.Categories) > 0 {
-        filtered = fe.filterByCategories(filtered, criteria.Categories)
-    }
-    if len(criteria.ExcludeCategories) > 0 {
-        filtered = fe.excludeCategories(filtered, criteria.ExcludeCategories)
-    }
-    
-    // 2. Dietary requirements (high selectivity)
-    if len(criteria.DietaryRequirements) > 0 {
-        filtered = fe.filterByDietary(filtered, criteria.DietaryRequirements)
-    }
-    
-    // 3. Location constraints (medium selectivity)
-    if criteria.MaxDistance != nil && criteria.CenterLocation != nil {
-        filtered = fe.filterByDistance(filtered, *criteria.CenterLocation, *criteria.MaxDistance)
-    }
-    
-    // 4. Recent activity filters (medium selectivity)
-    if criteria.ExcludeRecentDays != nil {
-        var err error
-        filtered, err = fe.filterByRecentActivity(ctx, filtered, criteria.UserID, criteria.TribeID, *criteria.ExcludeRecentDays)
-        if err != nil {
-            return nil, err
-        }
-    }
-    
-    // 5. Opening hours (low selectivity, expensive to calculate)
-    if criteria.MustBeOpenFor != nil {
-        filtered = fe.filterByOpeningHours(filtered, *criteria.MustBeOpenFor)
-    }
-    
-    // 6. Price range (low selectivity)
-    if criteria.PriceRange != nil {
-        filtered = fe.filterByPriceRange(filtered, *criteria.PriceRange)
-    }
-    
-    // 7. Tag filters (variable selectivity)
-    if len(criteria.Tags) > 0 {
-        filtered = fe.filterByTags(filtered, criteria.Tags)
-    }
-    if len(criteria.ExcludeTags) > 0 {
-        filtered = fe.excludeTags(filtered, criteria.ExcludeTags)
-    }
-    
-    return filtered, nil
+type TribeDecisionPreferences struct {
+    DefaultK int `json:"default_k"` // Configurable per tribe
+    DefaultM int `json:"default_m"` // Configurable per tribe
+    MaxK     int `json:"max_k"`     // Maximum eliminations allowed
+    MaxM     int `json:"max_m"`     // Maximum final options allowed
 }
 ```
 
-### KN+M Algorithm
+### Parameter Reduction Algorithm
 ```go
-type DecisionAlgorithm struct {
-    filterEngine *FilterEngine
-}
-
-type AlgorithmParams struct {
-    K            int `json:"k"`              // Eliminations per person
-    N            int `json:"n"`              // Number of participants
-    M            int `json:"m"`              // Final random selections
-    InitialCount int `json:"initial_count"`  // Total candidates to start with
-}
-
-func (da *DecisionAlgorithm) SuggestOptimalParams(availableCount, tribeSize int, preferences UserPreferences) []AlgorithmParams {
-    suggestions := []AlgorithmParams{}
-    
-    maxK := preferences.MaxEliminationsPerPerson
-    if maxK == 0 {
-        maxK = 3 // Default maximum
+func (da *DecisionAlgorithm) AdjustParametersForResultCount(k, m, n, resultCount int) (int, int, error) {
+    if resultCount == 0 {
+        return 0, 0, errors.New("no results available for decision")
     }
     
-    maxM := preferences.MaxFinalOptions
-    if maxM == 0 {
-        maxM = 3 // Default maximum
+    // Apply reduction algorithm when K*N + M > resultCount
+    for k*n + m > resultCount {
+        // Step 1: If K > 2, reduce K by 1
+        if k > 2 {
+            k--
+            continue
+        }
+        
+        // Step 2: If M > 3, reduce M by 1
+        if m > 3 {
+            m--
+            continue
+        }
+        
+        // Step 3: If K > 1, reduce K by 1
+        if k > 1 {
+            k--
+            continue
+        }
+        
+        // Step 4: If M > 1, reduce M by 1
+        if m > 1 {
+            m--
+            continue
+        }
+        
+        // Final fallback: K=0, M=resultCount
+        k = 0
+        m = resultCount
+        break
     }
     
-    // Generate valid combinations
-    for k := 0; k <= maxK; k++ {
-        for m := 1; m <= maxM; m++ {
-            initialNeeded := k*tribeSize + m
-            if initialNeeded <= availableCount {
-                suggestions = append(suggestions, AlgorithmParams{
-                    K:            k,
-                    N:            tribeSize,
-                    M:            m,
-                    InitialCount: initialNeeded,
-                })
-            }
+    return k, m, nil
+}
+
+func (da *DecisionAlgorithm) SuggestOptimalParams(availableCount, tribeSize int, preferences TribeDecisionPreferences) (int, int, error) {
+    k := preferences.DefaultK
+    m := preferences.DefaultM
+    n := tribeSize
+    
+    // Apply reduction algorithm if needed
+    adjustedK, adjustedM, err := da.AdjustParametersForResultCount(k, m, n, availableCount)
+    if err != nil {
+        return 0, 0, err
+    }
+    
+    return adjustedK, adjustedM, nil
+}
+```
+
+### Tribe Departure Handling
+```go
+type TribeDepartureOptions struct {
+    PreserveSharedLists bool `json:"preserve_shared_lists"` // User choice on departure
+}
+
+func (s *TribeService) HandleUserDeparture(ctx context.Context, userID, tribeID string, options TribeDepartureOptions) error {
+    // 1. Remove user from tribe membership
+    if err := s.removeTribeMembership(ctx, userID, tribeID); err != nil {
+        return err
+    }
+    
+    // 2. Handle list shares based on user preference
+    if !options.PreserveSharedLists {
+        // Remove all shares of user's lists with this tribe
+        if err := s.revokeUserListShares(ctx, userID, tribeID); err != nil {
+            return err
         }
     }
     
-    // Sort by preference (prefer higher K, then lower M)
-    sort.Slice(suggestions, func(i, j int) bool {
-        if suggestions[i].K != suggestions[j].K {
-            return suggestions[i].K > suggestions[j].K
-        }
-        return suggestions[i].M < suggestions[j].M
-    })
+    // 3. User automatically loses access to:
+    // - Tribe's internal lists (handled by membership removal)
+    // - Lists shared with tribe (unless separately shared with user)
     
-    return suggestions
-}
-
-func (da *DecisionAlgorithm) ProcessElimination(ctx context.Context, sessionID string, userID string, eliminatedItemIDs []string) (*DecisionSession, error) {
-    session, err := da.getSession(ctx, sessionID)
-    if err != nil {
-        return nil, err
-    }
-    
-    // Validate elimination count
-    if len(eliminatedItemIDs) > session.AlgorithmParams.K {
-        return nil, errors.New("too many eliminations")
-    }
-    
-    // Record eliminations
-    for _, itemID := range eliminatedItemIDs {
-        if err := da.recordElimination(ctx, sessionID, userID, itemID); err != nil {
-            return nil, err
-        }
-    }
-    
-    // Check if all participants have completed their eliminations
-    remainingParticipants, err := da.getRemainingParticipants(ctx, sessionID)
-    if err != nil {
-        return nil, err
-    }
-    
-    if len(remainingParticipants) == 0 {
-        // All eliminations complete, finalize session
-        return da.finalizeSession(ctx, sessionID)
-    }
-    
-    return session, nil
-}
-
-func (da *DecisionAlgorithm) finalizeSession(ctx context.Context, sessionID string) (*DecisionSession, error) {
-    session, err := da.getSession(ctx, sessionID)
-    if err != nil {
-        return nil, err
-    }
-    
-    // Get remaining candidates after all eliminations
-    remaining, err := da.getRemainingCandidates(ctx, sessionID)
-    if err != nil {
-        return nil, err
-    }
-    
-    var finalSelection *ListItem
-    if len(remaining) == 1 {
-        finalSelection = &remaining[0]
-    } else if len(remaining) > 1 {
-        // Random selection from remaining candidates
-        idx := rand.Intn(len(remaining))
-        finalSelection = &remaining[idx]
-    }
-    
-    // Update session status and final selection
-    session.Status = "completed"
-    session.FinalSelection = finalSelection
-    session.CompletedAt = time.Now()
-    
-    return da.updateSession(ctx, session)
+    return nil
 }
 ```
 
