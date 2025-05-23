@@ -1,0 +1,316 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# Tribe Application - Full-Stack Development Guide
+
+*Auto-attached rule for all development work on the Tribe collaborative decision-making application*
+
+## Project Overview
+
+**Tribe** is a collaborative decision-making web application for small groups (1-8 people) to make choices about activities, restaurants, entertainment, and shared experiences through structured list management and algorithmic decision processes.
+
+**Core Values**: Simplicity, Collaboration, Flexibility, Privacy (self-hostable), Small Scale, Reliability
+
+## Technology Stack
+
+### Backend
+- **Language**: Go 1.21+
+- **Framework**: Gin web framework  
+- **Database**: PostgreSQL 15+
+- **API**: Hybrid GraphQL (complex queries) + REST (simple operations)
+- **Authentication**: OAuth 2.0 (Google primary) + JWT tokens
+- **Testing**: Go testing package + testify
+
+### Frontend  
+- **Language**: TypeScript
+- **Framework**: React 18+
+- **State Management**: React Context + useReducer (no Redux)
+- **UI Framework**: shadcn/ui + Tailwind CSS
+- **Build Tool**: Vite
+- **Testing**: Vitest + React Testing Library
+
+### Infrastructure
+- **Deployment**: Docker-based for self-hosting
+- **Database**: PostgreSQL with UUID primary keys, snake_case columns
+- **E2E Testing**: Playwright
+
+## Repository Structure
+
+```
+cmd/
+├── server/main.go           # Application entry point
+├── migrate/main.go          # Database migration tool
+internal/
+├── api/
+│   ├── graphql/            # GraphQL schema and resolvers
+│   ├── rest/               # REST endpoints (auth, simple operations) 
+│   └── middleware/         # Auth, CORS, logging, rate limiting
+├── auth/                   # OAuth providers and JWT management
+├── models/                 # Domain models and validation
+├── services/               # Business logic layer
+├── repository/             # Data access layer
+├── filters/                # Decision filtering engine
+└── utils/                  # Shared utilities
+migrations/                 # SQL migration files
+tests/                      # Test files
+docker/                     # Docker configuration
+
+src/                        # Frontend React app
+├── components/
+│   ├── auth/              # Authentication components
+│   ├── tribes/            # Tribe management
+│   ├── lists/             # List management  
+│   ├── decisions/         # Decision-making flow
+│   └── common/            # Reusable UI components
+├── graphql/               # Queries, mutations, fragments
+├── hooks/                 # Custom React hooks
+├── services/              # API client and utilities
+├── store/                 # Context-based state management
+├── types/                 # TypeScript definitions
+└── utils/                 # Helper functions
+```
+
+## Documentation Locations
+
+### Primary References
+- **Main Design**: `CLAUDE4-COMBINED-ANALYSIS.md` - Comprehensive system design and architecture
+- **Refined Guidance**: `REFINED-PROMPT-GUIDANCE.md` - Development practices and prompting guidance
+
+### Design Documents (`design-docs/v1/`)
+- **User Stories**: `user-stories/` - Complete functional requirements
+- **Implementation**: `implementation/` - Technical implementation details
+  - `testing-strategy.md` - Testing approach and coverage goals
+  - `roadmap.md` - Development phases and milestones
+- **Algorithms**: `algorithms/decision-making.md` - K+M elimination algorithm specs
+
+### Open Issues
+- **Questions**: `OPEN-QUESTIONS.md` - Unresolved design decisions and conflicts
+
+## Key System Components
+
+### Authentication
+- OAuth 2.0 with Google (primary)
+- Development/Test login mode (dev environment only)
+- JWT token management with refresh
+- User profiles with dietary preferences and location settings
+
+### Core Entities
+- **Users**: Individual accounts with preferences and profiles
+- **Tribes**: Small groups (max 8 members) with governance rules
+- **Lists**: Collections of items (restaurants, movies, activities) 
+- **List Items**: Individual choices with metadata, location, dietary info
+- **Decision Sessions**: Collaborative elimination processes using K+M algorithm
+
+### Business Logic
+- **K+M Elimination Algorithm**: K rounds of elimination, final M candidates for random selection
+- **Senior Member**: Earliest tribe member (by invite timestamp) handles conflicts
+- **Consensus Governance**: Member removal and tribe deletion require unanimous approval
+- **Activity Tracking**: Log visits/completions with ratings and notes
+
+## Database Schema Key Points
+
+- **Primary Keys**: UUIDs for all entities
+- **Naming**: snake_case for columns, plural table names
+- **Core Tables**: users, tribes, tribe_memberships, lists, list_items, decision_sessions
+- **Soft Deletion**: Not implemented in MVP (uses hard deletes with confirmation)
+- **Timestamps**: All tables include created_at, updated_at with timezone support
+
+## Development Practices
+
+### Test-Driven Development (TDD) 
+- **Write tests first** before implementing features
+- **Coverage Goals**: 90% backend, 85% frontend, full E2E suite
+- **Test Structure**: Unit → Integration → E2E
+- **Test Data**: Use test database with cleanup between tests
+
+### Code Quality Standards
+- **Go**: Follow standard Go conventions, use gofmt, golint
+- **React**: TypeScript strict mode, functional components, custom hooks
+- **Database**: Migrations for all schema changes
+- **API**: GraphQL for complex queries, REST for simple operations
+
+### Development Workflow
+1. **Analyze** existing patterns and documentation
+2. **Plan** implementation approach and identify dependencies  
+3. **Write tests** that define expected behavior
+4. **Implement** feature following TDD cycle
+5. **Verify** tests pass and coverage maintained
+6. **Document** any new patterns or decisions
+
+### Critical Safety Rules
+- **File Editing**: Always use exact line numbers to prevent accidental deletion
+- **Database Changes**: Only modify schema through migrations
+- **Testing**: Verify tests pass before suggesting to run applications
+- **Error Handling**: Implement graceful degradation and user-friendly error messages
+
+## External Dependencies
+
+### APIs
+- **Google OAuth**: For user authentication
+- **Future Integrations**: Maps API for location data, business hours
+
+### Environment Setup
+- **Docker**: PostgreSQL database and optional full-stack deployment
+- **Local Development**: Go 1.21+, Node.js 18+, PostgreSQL 15+
+- **Environment Variables**: OAuth keys, database connection, JWT secrets
+
+## Debugging and Development Support
+
+### Database Access
+- **Local**: Direct PostgreSQL connection with credentials in docker-compose
+- **Schema**: Reference `migrations/` for current structure
+- **Test Data**: Use test database for debugging without affecting dev data
+
+### Logging and Debug
+- **Verbose Mode**: Enable detailed logging with VERBOSE environment variable
+- **Debug Flags**: Use behind feature flags, not in regular operation
+- **Error Tracking**: Structured logging for troubleshooting
+
+### Development Commands
+```bash
+# Backend
+cd backend && go run cmd/server/main.go
+go test ./... -v -coverage
+
+# Frontend  
+cd frontend && npm run dev
+npm test
+npm run test:e2e
+
+# Database
+docker-compose up -d postgres
+go run cmd/migrate/main.go up
+```
+
+## Common Patterns and Conventions
+
+### API Design
+- **GraphQL**: Complex queries with relationships and filtering
+- **REST**: Simple CRUD, authentication endpoints
+- **Error Handling**: Consistent error responses with user-friendly messages
+
+### UI/UX Patterns
+- **Mobile-First**: Responsive design for all components
+- **Loading States**: Skeleton screens and progress indicators
+- **Error Boundaries**: Graceful error handling in React components
+- **Accessibility**: ARIA labels, keyboard navigation, semantic HTML
+
+### State Management
+- **React Context**: Global state for auth, tribes, current user
+- **Local State**: Component-specific state with useState/useReducer
+- **API Cache**: Optimistic updates with rollback on failure
+
+---
+
+## Specialized Guidance by Context
+
+### When Working with Code Files/Directories (Developer Focus)
+
+**EMPHASIZE TEST-DRIVEN DEVELOPMENT:**
+- Always write tests BEFORE implementing new features
+- Reference existing test patterns in `tests/` directory
+- Follow the TDD cycle: Red → Green → Refactor
+- Ensure new code maintains coverage targets (90% backend, 85% frontend)
+
+**Key Architectural Decisions:**
+- **Database**: Always use migrations for schema changes, never direct SQL
+- **API Layer**: Use GraphQL for complex queries, REST for simple CRUD
+- **State Management**: Prefer React Context over prop drilling, avoid Redux
+- **Error Handling**: Implement at service layer with user-friendly messages
+- **Authentication**: JWT tokens with refresh, OAuth2 for Google login
+
+**Access Patterns:**
+- **Database Direct Access**: Use for debugging via docker-compose credentials
+- **API Testing**: Use Postman/Insomnia collections in `/tests/api/`
+- **Test Data**: Generate via test fixtures, clean between tests
+
+**Running Tests:**
+```bash
+# Run with coverage
+go test ./... -v -coverage -coverprofile=coverage.out
+npm test -- --coverage
+
+# Debug failing tests with verbose output
+go test ./... -v -count=1 -failfast
+npm test -- --verbose --no-cache
+```
+
+### When Working with Design Documents (Design/Architecture Focus)
+
+**CRITICAL DOCUMENTATION ANALYSIS:**
+- Always cross-reference with `CLAUDE4-COMBINED-ANALYSIS.md` for current system state
+- Identify and highlight **inconsistencies** or **conflicts** between documents
+- Raise **ambiguities** as open questions to be tracked
+- Check `OPEN-QUESTIONS.md` for known unresolved issues
+
+**Documentation Standards:**
+- **Consistency**: Ensure all design docs align with implemented architecture
+- **Completeness**: Flag missing user stories, edge cases, or technical details
+- **Traceability**: Link requirements to implementation and tests
+- **Maintenance**: Update docs when patterns or decisions change
+
+**Critical Analysis Required:**
+- **Conflicting Requirements**: Highlight contradictions between design docs
+- **Implementation Gaps**: Identify features designed but not implemented
+- **Technical Debt**: Note where current code deviates from design
+- **Scalability Issues**: Question decisions that might not scale
+
+**When conflicts found:**
+1. Document in `OPEN-QUESTIONS.md` with specific details
+2. Reference conflicting documents and line numbers
+3. Propose resolution options with trade-offs
+4. Escalate for decision if significant impact
+
+### When Debugging Issues (Deep Problem-Solving Focus)
+
+**VERBOSE DEBUGGING PROTOCOL:**
+- Enable verbose logging ONLY with explicit flags (VERBOSE=true, DEBUG=1)
+- Use structured logging with correlation IDs for request tracing
+- Never enable verbose output in regular tests or production
+
+**Database Investigation:**
+```bash
+# Access local dev database directly
+docker exec -it tribe_postgres psql -U postgres -d tribe
+
+# Check schema and constraints
+\d+ table_name
+SELECT * FROM pg_stat_activity;
+
+# Analyze data for debugging
+SELECT * FROM decision_sessions WHERE status = 'error';
+```
+
+**Debugging Commands:**
+```bash
+# Backend with debug logging
+VERBOSE=true DEBUG=1 go run cmd/server/main.go
+
+# Frontend with console debugging  
+npm run dev -- --debug
+
+# Test with maximum verbosity
+go test ./... -v -count=1 -failfast -args -test.v=true
+```
+
+**Problem Isolation Strategy:**
+1. **Reproduce**: Create minimal test case that demonstrates issue
+2. **Isolate**: Identify specific service/component/function causing problem
+3. **Trace**: Follow data flow and execution path with debug logs
+4. **Verify**: Confirm fix with automated test that covers the scenario
+
+**Database State Analysis:**
+- Use test database for investigation to avoid corrupting dev data
+- Reference `migrations/` for current schema understanding
+- Check foreign key constraints and index performance
+- Verify data consistency across related tables
+
+**Performance Investigation:**
+- Profile with `go tool pprof` for backend performance issues
+- Use browser dev tools for frontend performance analysis
+- Monitor database query performance with EXPLAIN ANALYZE
+- Check for N+1 queries in GraphQL resolvers
+
+Remember: This is a **small-scale, privacy-focused application** optimized for friend groups, not enterprise software. Keep solutions simple, maintainable, and focused on core collaborative decision-making functionality.
