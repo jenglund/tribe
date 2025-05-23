@@ -49,12 +49,14 @@ This document consolidates the design recommendations from four AI models, recon
 
 ### Tribe Management (US-TRIBE)
 - **US-TRIBE-001**: As a user, I want to create a new tribe (max 8 members) so I can collaborate with specific groups
-- **US-TRIBE-002**: As a user, I want to invite others via email to join my tribe
+- **US-TRIBE-002**: As a tribe member, I want to invite others via email to join our tribe
 - **US-TRIBE-003**: As a user, I want to accept/decline tribe invitations
-- **US-TRIBE-004**: As a tribe member, I want to see all members and their roles
-- **US-TRIBE-005**: As a tribe creator, I want to remove members when necessary
+- **US-TRIBE-004**: As a tribe member, I want to see all members and understand who the senior member is
+- **US-TRIBE-005**: As a tribe member, I want to remove other members when necessary (with appropriate safeguards)
 - **US-TRIBE-006**: As a tribe member, I want to leave a tribe I no longer want to participate in
 - **US-TRIBE-007**: As a user, I want to be part of multiple tribes for different social contexts
+- **US-TRIBE-008**: As a tribe member, I want to update tribe settings (name, description, preferences) collectively
+- **US-TRIBE-009**: As a tribe member, I want conflicts resolved fairly using the senior member as tie-breaker
 
 ### List Management (US-LIST)
 - **US-LIST-001**: As a user, I want to create personal lists with categories (restaurants, movies, activities)
@@ -159,6 +161,7 @@ CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email VARCHAR(255) UNIQUE NOT NULL,
     name VARCHAR(255) NOT NULL,
+    display_name VARCHAR(255) NOT NULL, -- Global default display name
     avatar_url VARCHAR(500),
     oauth_provider VARCHAR(50) NOT NULL, -- 'google', 'dev' (for development)
     oauth_id VARCHAR(255) NOT NULL,
@@ -177,9 +180,10 @@ CREATE TABLE tribes (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(255) NOT NULL,
     description TEXT,
-    creator_id UUID NOT NULL REFERENCES users(id),
+    creator_id UUID NOT NULL REFERENCES users(id), -- Informational only, not functional
     max_members INTEGER DEFAULT 8,
     decision_preferences JSONB DEFAULT '{"k": 2, "m": 3}'::jsonb, -- Default K=2, M=3
+    show_elimination_details BOOLEAN DEFAULT TRUE, -- Configurable elimination visibility
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -191,10 +195,27 @@ CREATE TABLE tribe_memberships (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tribe_id UUID NOT NULL REFERENCES tribes(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    role VARCHAR(50) DEFAULT 'member', -- 'creator', 'admin', 'member'
+    role VARCHAR(50) DEFAULT 'member', -- 'creator', 'member' (all have equal rights)
+    tribe_display_name VARCHAR(255), -- User's display name within this tribe
     joined_at TIMESTAMPTZ DEFAULT NOW(),
+    last_login_at TIMESTAMPTZ,
+    is_inactive BOOLEAN DEFAULT FALSE,
     UNIQUE(tribe_id, user_id)
 );
+
+-- Function to get senior member (longest-standing) for tie-breaking
+CREATE OR REPLACE FUNCTION get_tribe_senior_member(tribe_uuid UUID)
+RETURNS UUID AS $$
+BEGIN
+    RETURN (
+        SELECT user_id 
+        FROM tribe_memberships 
+        WHERE tribe_id = tribe_uuid 
+        ORDER BY joined_at ASC 
+        LIMIT 1
+    );
+END;
+$$ LANGUAGE plpgsql;
 ```
 
 #### Lists Table (Using owner_type/owner_id approach)
@@ -258,13 +279,15 @@ CREATE TABLE activity_history (
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     tribe_id UUID REFERENCES tribes(id), -- NULL if individual activity
     activity_type VARCHAR(50) DEFAULT 'visited', -- 'visited', 'watched', 'completed'
-    completed_at DATE NOT NULL, -- Date of activity (not timestamp)
+    activity_status VARCHAR(50) DEFAULT 'confirmed', -- 'confirmed', 'tentative', 'cancelled'
+    completed_at TIMESTAMPTZ NOT NULL, -- When activity happened/will happen
     duration_minutes INTEGER, -- Optional duration
-    companions JSONB DEFAULT '[]'::jsonb, -- Array of user IDs and/or names
-    rating INTEGER CHECK (rating >= 1 AND rating <= 5),
+    participants JSONB DEFAULT '[]'::jsonb, -- Array of user IDs who participated
     notes TEXT,
+    recorded_by_user_id UUID NOT NULL REFERENCES users(id), -- Who logged this entry
+    decision_session_id UUID REFERENCES decision_sessions(id), -- If from decision result
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(list_item_id, user_id, completed_at) -- Prevent duplicate same-day entries
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 ```
 
@@ -274,16 +297,28 @@ CREATE TABLE decision_sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tribe_id UUID NOT NULL REFERENCES tribes(id),
     name VARCHAR(255),
-    status VARCHAR(50) DEFAULT 'configuring', -- 'configuring', 'eliminating', 'completed', 'cancelled'
+    status VARCHAR(50) DEFAULT 'configuring', -- 'configuring', 'eliminating', 'completed', 'expired', 'cancelled'
     filters JSONB DEFAULT '{}'::jsonb, -- Applied filter criteria
     algorithm_params JSONB NOT NULL, -- {k: 2, n: 2, m: 3, initial_count: 7}
+    elimination_order JSONB DEFAULT '[]'::jsonb, -- Randomized user order for turns
+    current_turn_index INTEGER DEFAULT 0, -- Index in elimination_order array
+    current_round INTEGER DEFAULT 1, -- Which elimination round (1 to K)
+    turn_started_at TIMESTAMPTZ, -- When current turn started (for timeout)
+    turn_timeout_minutes INTEGER DEFAULT 5, -- Timeout per turn
+    session_timeout_minutes INTEGER DEFAULT 30, -- Overall session inactivity timeout
+    last_activity_at TIMESTAMPTZ DEFAULT NOW(), -- Track overall session activity
+    skipped_users JSONB DEFAULT '[]'::jsonb, -- Users who were skipped and their missed turns
     initial_candidates JSONB DEFAULT '[]'::jsonb, -- Array of list_item_ids
     current_candidates JSONB DEFAULT '[]'::jsonb, -- Remaining after eliminations
     final_selection_id UUID REFERENCES list_items(id),
+    runners_up JSONB DEFAULT '[]'::jsonb, -- The M set (other final candidates)
+    elimination_history JSONB DEFAULT '[]'::jsonb, -- Complete elimination timeline
+    is_pinned BOOLEAN DEFAULT FALSE, -- Prevent automatic cleanup
     created_by_user_id UUID NOT NULL REFERENCES users(id),
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    completed_at TIMESTAMPTZ
+    completed_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ -- For automatic cleanup (1 month after completion)
 );
 ```
 
@@ -361,7 +396,8 @@ type Tribe {
   id: ID!
   name: String!
   description: String
-  creator: User!
+  creator: User! # Informational only - all members have equal rights
+  seniorMember: User! # Longest-standing member for tie-breaking
   members: [TribeMember!]!
   lists: [List!]!
   decisionSessions: [DecisionSession!]!
@@ -374,11 +410,12 @@ type TribeMember {
   user: User!
   role: TribeMemberRole!
   joinedAt: DateTime!
+  isCreator: Boolean! # Informational flag
+  isSenior: Boolean! # True for longest-standing member
 }
 
 enum TribeMemberRole {
-  CREATOR
-  ADMIN
+  CREATOR # Informational only - same permissions as MEMBER
   MEMBER
 }
 
@@ -448,18 +485,27 @@ type ActivityEntry {
   user: User!
   tribe: Tribe
   activityType: ActivityType!
-  completedAt: Date!
+  activityStatus: ActivityStatus!
+  completedAt: DateTime!
   durationMinutes: Int
-  companions: [Companion!]!
-  rating: Int
+  participants: [User!]!
   notes: String
+  recordedBy: User!
+  decisionSession: DecisionSession
   createdAt: DateTime!
+  updatedAt: DateTime!
 }
 
 enum ActivityType {
   VISITED
   WATCHED
   COMPLETED
+}
+
+enum ActivityStatus {
+  CONFIRMED
+  TENTATIVE
+  CANCELLED
 }
 
 type Companion {
@@ -475,6 +521,12 @@ type DecisionSession {
   status: DecisionStatus!
   filters: FilterCriteria!
   algorithmParams: AlgorithmParams!
+  eliminationOrder: [User!]!
+  currentTurnIndex: Int!
+  currentRound: Int!
+  turnStartedAt: DateTime
+  turnTimeoutMinutes: Int!
+  skippedUsers: [SkippedTurn!]!
   sourceLists: [List!]!
   initialCandidates: [ListItem!]!
   currentCandidates: [ListItem!]!
@@ -488,6 +540,7 @@ type DecisionSession {
 enum DecisionStatus {
   CONFIGURING
   ELIMINATING
+  CATCH_UP_PHASE
   COMPLETED
   CANCELLED
 }
@@ -520,6 +573,23 @@ type Elimination {
   eliminatedAt: DateTime!
 }
 
+type SkippedTurn {
+  user: User!
+  round: Int!
+  turnInRound: Int!
+}
+
+type EliminationStatus {
+  sessionId: ID!
+  currentCandidates: [ListItem!]!
+  currentUserTurn: User
+  isYourTurn: Boolean!
+  currentRound: Int!
+  turnTimeRemaining: Int! # seconds
+  eliminationOrder: [User!]!
+  skippedUsers: [SkippedTurn!]!
+}
+
 # Mutations
 type Mutation {
   # User Management
@@ -546,8 +616,11 @@ type Mutation {
   
   # Activity Tracking
   logActivity(input: LogActivityInput!): ActivityEntry!
-  updateActivity(id: ID!, input: UpdateActivityInput!): ActivityEntry!
+  updateTentativeActivity(id: ID!, input: UpdateActivityInput!): ActivityEntry!
+  cancelTentativeActivity(id: ID!): ActivityEntry!
+  confirmTentativeActivity(id: ID!, input: ConfirmActivityInput!): ActivityEntry!
   deleteActivity(id: ID!): Boolean!
+  logDecisionResult(sessionId: ID!, scheduledFor: DateTime): ActivityEntry!
   
   # Decision Making
   createDecisionSession(input: CreateDecisionSessionInput!): DecisionSession!
@@ -555,6 +628,8 @@ type Mutation {
   applyFilters(sessionId: ID!, filters: FilterCriteriaInput!): DecisionSession!
   startElimination(sessionId: ID!): DecisionSession!
   eliminateItem(sessionId: ID!, itemId: ID!): DecisionSession!
+  skipTurn(sessionId: ID!): DecisionSession!
+  rejoinElimination(sessionId: ID!): DecisionSession!
   completeDecision(sessionId: ID!): DecisionSession!
   cancelDecision(sessionId: ID!): DecisionSession!
 }
@@ -566,11 +641,18 @@ type Query {
   list(id: ID!): List
   listItem(id: ID!): ListItem
   decisionSession(id: ID!): DecisionSession
+  eliminationStatus(sessionId: ID!): EliminationStatus!
+  activityEntry(id: ID!): ActivityEntry
   
   # Search and filtering
   searchLists(query: String!, type: ListType): [List!]!
   searchListItems(query: String!, filters: FilterCriteriaInput): [ListItem!]!
   suggestKMValues(availableCount: Int!, tribeSize: Int!): [AlgorithmParams!]!
+  
+  # Activity queries
+  listItemActivities(listItemId: ID!, tribeId: ID): [ActivityEntry!]!
+  userActivities(userId: ID!, tribeId: ID): [ActivityEntry!]!
+  tentativeActivities(tribeId: ID!): [ActivityEntry!]!
 }
 
 # Subscriptions (for real-time features)
@@ -1210,3 +1292,1661 @@ test('complete decision making flow', async ({ page }) => {
 - [ ] Documentation is updated
 
 This consolidated design provides a comprehensive foundation for implementing the Tribe application, incorporating the best ideas from all four design approaches while maintaining internal consistency and following best practices. 
+
+### Turn-Based Elimination Algorithm
+
+```go
+// Turn-based elimination system
+type EliminationSession struct {
+    SessionID           string    `json:"session_id"`
+    TribeID             string    `json:"tribe_id"`
+    EliminationOrder    []string  `json:"elimination_order"`    // Randomized user IDs
+    CurrentTurnIndex    int       `json:"current_turn_index"`   // Index in elimination_order
+    CurrentRound        int       `json:"current_round"`        // Which round (1 to K)
+    TurnStartedAt       time.Time `json:"turn_started_at"`
+    TurnTimeoutMinutes  int       `json:"turn_timeout_minutes"`
+    SkippedUsers        []SkippedTurn `json:"skipped_users"`
+    CurrentCandidates   []string  `json:"current_candidates"`   // Remaining item IDs
+}
+
+type SkippedTurn struct {
+    UserID string `json:"user_id"`
+    Round  int    `json:"round"`
+    TurnInRound int `json:"turn_in_round"`
+}
+
+type EliminationAlgorithm struct {
+    db repository.Database
+}
+
+func (ea *EliminationAlgorithm) StartEliminationPhase(ctx context.Context, sessionID string) (*EliminationSession, error) {
+    session, err := ea.getDecisionSession(ctx, sessionID)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Get tribe members
+    members, err := ea.getTribeMembers(ctx, session.TribeID)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Randomize elimination order
+    rand.Shuffle(len(members), func(i, j int) {
+        members[i], members[j] = members[j], members[i]
+    })
+    
+    eliminationOrder := make([]string, len(members))
+    for i, member := range members {
+        eliminationOrder[i] = member.UserID
+    }
+    
+    elimSession := &EliminationSession{
+        SessionID:           sessionID,
+        TribeID:            session.TribeID,
+        EliminationOrder:   eliminationOrder,
+        CurrentTurnIndex:   0,
+        CurrentRound:       1,
+        TurnStartedAt:      time.Now(),
+        TurnTimeoutMinutes: 5,
+        SkippedUsers:       []SkippedTurn{},
+        CurrentCandidates:  session.InitialCandidates,
+    }
+    
+    // Update session status and save state
+    session.Status = "eliminating"
+    if err := ea.saveEliminationState(ctx, elimSession); err != nil {
+        return nil, err
+    }
+    
+    return elimSession, nil
+}
+
+func (ea *EliminationAlgorithm) ProcessElimination(ctx context.Context, sessionID, userID, eliminatedItemID string) (*EliminationSession, error) {
+    session, err := ea.getEliminationSession(ctx, sessionID)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Verify it's this user's turn
+    currentUserID := session.EliminationOrder[session.CurrentTurnIndex]
+    if currentUserID != userID {
+        return nil, errors.New("not your turn")
+    }
+    
+    // Verify item is still available
+    if !contains(session.CurrentCandidates, eliminatedItemID) {
+        return nil, errors.New("item not available for elimination")
+    }
+    
+    // Remove item from candidates
+    session.CurrentCandidates = removeItem(session.CurrentCandidates, eliminatedItemID)
+    
+    // Record elimination
+    if err := ea.recordElimination(ctx, sessionID, userID, eliminatedItemID, session.CurrentRound); err != nil {
+        return nil, err
+    }
+    
+    // Advance to next turn
+    return ea.advanceToNextTurn(ctx, session)
+}
+
+func (ea *EliminationAlgorithm) advanceToNextTurn(ctx context.Context, session *EliminationSession) (*EliminationSession, error) {
+    params, err := ea.getAlgorithmParams(ctx, session.SessionID)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Move to next player in order
+    session.CurrentTurnIndex = (session.CurrentTurnIndex + 1) % len(session.EliminationOrder)
+    
+    // If we've completed a full cycle, move to next round
+    if session.CurrentTurnIndex == 0 {
+        session.CurrentRound++
+    }
+    
+    session.TurnStartedAt = time.Now()
+    
+    // Check if elimination phase is complete
+    if session.CurrentRound > params.K {
+        return ea.finalizeCatchUpPhase(ctx, session)
+    }
+    
+    // Save updated state
+    if err := ea.saveEliminationState(ctx, session); err != nil {
+        return nil, err
+    }
+    
+    return session, nil
+}
+
+func (ea *EliminationAlgorithm) HandleTimeout(ctx context.Context, sessionID string) (*EliminationSession, error) {
+    session, err := ea.getEliminationSession(ctx, sessionID)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Check if current turn has timed out
+    timeout := time.Duration(session.TurnTimeoutMinutes) * time.Minute
+    if time.Since(session.TurnStartedAt) < timeout {
+        return session, nil // Not timed out yet
+    }
+    
+    // Record skipped turn
+    currentUserID := session.EliminationOrder[session.CurrentTurnIndex]
+    skippedTurn := SkippedTurn{
+        UserID:      currentUserID,
+        Round:       session.CurrentRound,
+        TurnInRound: session.CurrentTurnIndex,
+    }
+    session.SkippedUsers = append(session.SkippedUsers, skippedTurn)
+    
+    // Advance to next turn
+    return ea.advanceToNextTurn(ctx, session)
+}
+
+func (ea *EliminationAlgorithm) finalizeCatchUpPhase(ctx context.Context, session *EliminationSession) (*EliminationSession, error) {
+    // Allow skipped users to make their eliminations
+    if len(session.SkippedUsers) > 0 {
+        // Process catch-up eliminations in order
+        return ea.startCatchUpPhase(ctx, session)
+    }
+    
+    // Complete the session
+    return ea.completeEliminationPhase(ctx, session)
+}
+
+func (ea *EliminationAlgorithm) completeEliminationPhase(ctx context.Context, session *EliminationSession) (*EliminationSession, error) {
+    params, err := ea.getAlgorithmParams(ctx, session.SessionID)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Determine final selection
+    var finalSelection *string
+    remainingCount := len(session.CurrentCandidates)
+    
+    if remainingCount == 1 {
+        finalSelection = &session.CurrentCandidates[0]
+    } else if remainingCount > 1 {
+        // Adjust M if needed due to skipped eliminations
+        effectiveM := params.M
+        if remainingCount > effectiveM {
+            effectiveM = remainingCount
+        }
+        
+        // Random selection from remaining candidates
+        if effectiveM == 1 {
+            idx := rand.Intn(len(session.CurrentCandidates))
+            finalSelection = &session.CurrentCandidates[idx]
+        }
+        // If M > 1, present multiple options for final selection
+    }
+    
+    // Update decision session
+    return ea.finalizeDecisionSession(ctx, session.SessionID, finalSelection)
+}
+
+// Polling endpoint for frontend
+func (ea *EliminationAlgorithm) GetEliminationStatus(ctx context.Context, sessionID, userID string) (*EliminationStatus, error) {
+    session, err := ea.getEliminationSession(ctx, sessionID)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Check for timeout
+    session, _ = ea.HandleTimeout(ctx, sessionID)
+    
+    currentUserID := ""
+    if len(session.EliminationOrder) > 0 {
+        currentUserID = session.EliminationOrder[session.CurrentTurnIndex]
+    }
+    
+    return &EliminationStatus{
+        SessionID:         sessionID,
+        CurrentCandidates: session.CurrentCandidates,
+        CurrentUserTurn:   currentUserID,
+        IsYourTurn:        currentUserID == userID,
+        CurrentRound:      session.CurrentRound,
+        TurnTimeRemaining: ea.calculateTimeRemaining(session),
+        EliminationOrder:  session.EliminationOrder,
+        SkippedUsers:      session.SkippedUsers,
+    }, nil
+}
+
+type EliminationStatus struct {
+    SessionID         string        `json:"session_id"`
+    CurrentCandidates []string      `json:"current_candidates"`
+    CurrentUserTurn   string        `json:"current_user_turn"`
+    IsYourTurn        bool          `json:"is_your_turn"`
+    CurrentRound      int           `json:"current_round"`
+    TurnTimeRemaining time.Duration `json:"turn_time_remaining"`
+    EliminationOrder  []string      `json:"elimination_order"`
+    SkippedUsers      []SkippedTurn `json:"skipped_users"`
+}
+```
+
+### Activity Tracking System
+
+```go
+// Enhanced activity tracking with tentative entries
+type ActivityEntry struct {
+    ID                string    `json:"id"`
+    ListItemID        string    `json:"list_item_id"`
+    UserID            string    `json:"user_id"`           // Who the activity is for
+    TribeID           *string   `json:"tribe_id"`
+    ActivityType      string    `json:"activity_type"`     // 'visited', 'watched', 'completed'
+    ActivityStatus    string    `json:"activity_status"`   // 'confirmed', 'tentative', 'cancelled'
+    CompletedAt       time.Time `json:"completed_at"`      // When it happened/will happen
+    DurationMinutes   *int      `json:"duration_minutes"`
+    Participants      []string  `json:"participants"`      // User IDs who participated
+    Notes             string    `json:"notes"`
+    RecordedByUserID  string    `json:"recorded_by_user_id"` // Who logged this
+    DecisionSessionID *string   `json:"decision_session_id"` // If from decision result
+    CreatedAt         time.Time `json:"created_at"`
+    UpdatedAt         time.Time `json:"updated_at"`
+}
+
+type ActivityService struct {
+    db repository.Database
+}
+
+func (as *ActivityService) LogActivity(ctx context.Context, req LogActivityRequest) (*ActivityEntry, error) {
+    entry := &ActivityEntry{
+        ID:               generateUUID(),
+        ListItemID:       req.ListItemID,
+        UserID:           req.UserID,
+        TribeID:          req.TribeID,
+        ActivityType:     req.ActivityType,
+        ActivityStatus:   req.ActivityStatus,
+        CompletedAt:      req.CompletedAt,
+        DurationMinutes:  req.DurationMinutes,
+        Participants:     req.Participants,
+        Notes:            req.Notes,
+        RecordedByUserID: req.RecordedByUserID,
+        CreatedAt:        time.Now(),
+        UpdatedAt:        time.Now(),
+    }
+    
+    // Auto-determine status based on completion time
+    if entry.ActivityStatus == "" {
+        if entry.CompletedAt.After(time.Now()) {
+            entry.ActivityStatus = "tentative"
+        } else {
+            entry.ActivityStatus = "confirmed"
+        }
+    }
+    
+    // Validate tribe membership
+    if req.TribeID != nil {
+        if err := as.validateTribeMembership(ctx, req.RecordedByUserID, *req.TribeID); err != nil {
+            return nil, err
+        }
+    }
+    
+    if err := as.db.CreateActivityEntry(ctx, entry); err != nil {
+        return nil, err
+    }
+    
+    return entry, nil
+}
+
+func (as *ActivityService) UpdateTentativeActivity(ctx context.Context, entryID, userID string, req UpdateActivityRequest) (*ActivityEntry, error) {
+    entry, err := as.db.GetActivityEntry(ctx, entryID)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Only allow updates to tentative entries
+    if entry.ActivityStatus != "tentative" {
+        return nil, errors.New("can only update tentative activities")
+    }
+    
+    // Verify user is in the tribe
+    if entry.TribeID != nil {
+        if err := as.validateTribeMembership(ctx, userID, *entry.TribeID); err != nil {
+            return nil, err
+        }
+    }
+    
+    // Update fields
+    if req.ActivityStatus != nil {
+        entry.ActivityStatus = *req.ActivityStatus
+    }
+    if req.CompletedAt != nil {
+        entry.CompletedAt = *req.CompletedAt
+    }
+    if req.Participants != nil {
+        entry.Participants = req.Participants
+    }
+    if req.Notes != nil {
+        entry.Notes = *req.Notes
+    }
+    
+    entry.UpdatedAt = time.Now()
+    
+    if err := as.db.UpdateActivityEntry(ctx, entry); err != nil {
+        return nil, err
+    }
+    
+    return entry, nil
+}
+
+func (as *ActivityService) LogDecisionResult(ctx context.Context, sessionID, userID string, scheduledFor *time.Time) (*ActivityEntry, error) {
+    session, err := as.db.GetDecisionSession(ctx, sessionID)
+    if err != nil {
+        return nil, err
+    }
+    
+    if session.FinalSelection == nil {
+        return nil, errors.New("no final selection available")
+    }
+    
+    // Get tribe members as default participants
+    members, err := as.db.GetTribeMembers(ctx, session.TribeID)
+    if err != nil {
+        return nil, err
+    }
+    
+    participants := make([]string, len(members))
+    for i, member := range members {
+        participants[i] = member.UserID
+    }
+    
+    completedAt := time.Now()
+    status := "confirmed"
+    
+    if scheduledFor != nil {
+        completedAt = *scheduledFor
+        if completedAt.After(time.Now()) {
+            status = "tentative"
+        }
+    }
+    
+    req := LogActivityRequest{
+        ListItemID:        *session.FinalSelection,
+        UserID:            userID,
+        TribeID:           &session.TribeID,
+        ActivityType:      "visited", // Default, can be changed
+        ActivityStatus:    status,
+        CompletedAt:       completedAt,
+        Participants:      participants,
+        RecordedByUserID:  userID,
+        DecisionSessionID: &sessionID,
+    }
+    
+    return as.LogActivity(ctx, req)
+}
+
+type LogActivityRequest struct {
+    ListItemID        string     `json:"list_item_id"`
+    UserID            string     `json:"user_id"`
+    TribeID           *string    `json:"tribe_id"`
+    ActivityType      string     `json:"activity_type"`
+    ActivityStatus    string     `json:"activity_status"`
+    CompletedAt       time.Time  `json:"completed_at"`
+    DurationMinutes   *int       `json:"duration_minutes"`
+    Participants      []string   `json:"participants"`
+    Notes             string     `json:"notes"`
+    RecordedByUserID  string     `json:"recorded_by_user_id"`
+    DecisionSessionID *string    `json:"decision_session_id"`
+}
+
+type UpdateActivityRequest struct {
+    ActivityStatus *string    `json:"activity_status"`
+    CompletedAt    *time.Time `json:"completed_at"`
+    Participants   []string   `json:"participants"`
+    Notes          *string    `json:"notes"`
+}
+```
+
+### Common Ownership Tribe Management
+
+```go
+// Tribe service implementing common ownership model
+type TribeService struct {
+    db repository.Database
+}
+
+// Common ownership validation - any member can perform tribe operations
+func (ts *TribeService) ValidateTribeMembership(ctx context.Context, userID, tribeID string) error {
+    isMember, err := ts.db.IsUserTribeMember(ctx, userID, tribeID)
+    if err != nil {
+        return err
+    }
+    if !isMember {
+        return errors.New("user is not a member of this tribe")
+    }
+    return nil
+}
+
+// Get senior member (longest-standing) for tie-breaking scenarios
+func (ts *TribeService) GetSeniorMember(ctx context.Context, tribeID string) (*User, error) {
+    return ts.db.GetTribeSeniorMember(ctx, tribeID)
+}
+
+// Any member can invite new members
+func (ts *TribeService) InviteMember(ctx context.Context, tribeID, inviterID, inviteeEmail string) error {
+    // Validate inviter is a member
+    if err := ts.ValidateTribeMembership(ctx, inviterID, tribeID); err != nil {
+        return err
+    }
+    
+    // Check tribe capacity
+    tribe, err := ts.db.GetTribe(ctx, tribeID)
+    if err != nil {
+        return err
+    }
+    
+    memberCount, err := ts.db.GetTribeMemberCount(ctx, tribeID)
+    if err != nil {
+        return err
+    }
+    
+    if memberCount >= tribe.MaxMembers {
+        return errors.New("tribe is at maximum capacity")
+    }
+    
+    // Create invitation
+    invitation := &TribeInvitation{
+        TribeID:      tribeID,
+        InviterID:    inviterID,
+        InviteeEmail: inviteeEmail,
+        Status:       "pending",
+        CreatedAt:    time.Now(),
+        ExpiresAt:    time.Now().Add(7 * 24 * time.Hour), // 7 days
+    }
+    
+    return ts.db.CreateTribeInvitation(ctx, invitation)
+}
+
+// Any member can remove other members (with safeguards)
+func (ts *TribeService) RemoveMember(ctx context.Context, tribeID, removerID, targetUserID string) error {
+    // Validate remover is a member
+    if err := ts.ValidateTribeMembership(ctx, removerID, tribeID); err != nil {
+        return err
+    }
+    
+    // Validate target is a member
+    if err := ts.ValidateTribeMembership(ctx, targetUserID, tribeID); err != nil {
+        return err
+    }
+    
+    // Prevent self-removal (use LeaveTribe instead)
+    if removerID == targetUserID {
+        return errors.New("use leave tribe function to remove yourself")
+    }
+    
+    // Get current member count
+    memberCount, err := ts.db.GetTribeMemberCount(ctx, tribeID)
+    if err != nil {
+        return err
+    }
+    
+    // Prevent removing last member
+    if memberCount <= 1 {
+        return errors.New("cannot remove the last member of a tribe")
+    }
+    
+    // **SAFETY CHECK**: Prevent mass removal in short timeframe
+    recentRemovals, err := ts.db.GetRecentRemovals(ctx, tribeID, time.Hour)
+    if err != nil {
+        return err
+    }
+    
+    // If more than half the tribe has been removed in the last hour, require senior member approval
+    if len(recentRemovals) >= memberCount/2 {
+        seniorMember, err := ts.GetSeniorMember(ctx, tribeID)
+        if err != nil {
+            return err
+        }
+        
+        if removerID != seniorMember.ID {
+            return errors.New("mass removal detected - senior member approval required")
+        }
+    }
+    
+    // Remove member
+    if err := ts.db.RemoveTribeMember(ctx, tribeID, targetUserID); err != nil {
+        return err
+    }
+    
+    // Log the removal for safety tracking
+    return ts.db.LogTribeMemberRemoval(ctx, tribeID, removerID, targetUserID)
+}
+
+// Members can leave tribes themselves
+func (ts *TribeService) LeaveTribe(ctx context.Context, tribeID, userID string) error {
+    // Validate user is a member
+    if err := ts.ValidateTribeMembership(ctx, userID, tribeID); err != nil {
+        return err
+    }
+    
+    // Check if this is the last member
+    memberCount, err := ts.db.GetTribeMemberCount(ctx, tribeID)
+    if err != nil {
+        return err
+    }
+    
+    if memberCount == 1 {
+        // Last member leaving - offer to delete tribe or transfer to someone else
+        return ts.handleLastMemberDeparture(ctx, tribeID, userID)
+    }
+    
+    // Remove user from tribe
+    return ts.db.RemoveTribeMember(ctx, tribeID, userID)
+}
+
+// Handle last member leaving - clean up or transfer
+func (ts *TribeService) handleLastMemberDeparture(ctx context.Context, tribeID, userID string) error {
+    // For now, just delete the tribe when last member leaves
+    // Could be enhanced to offer transfer to recent members or archive
+    return ts.db.DeleteTribe(ctx, tribeID)
+}
+
+// Any member can update tribe settings
+func (ts *TribeService) UpdateTribeSettings(ctx context.Context, tribeID, userID string, updates TribeUpdateRequest) error {
+    // Validate user is a member
+    if err := ts.ValidateTribeMembership(ctx, userID, tribeID); err != nil {
+        return err
+    }
+    
+    return ts.db.UpdateTribe(ctx, tribeID, updates)
+}
+
+// Conflict resolution using senior member
+func (ts *TribeService) ResolveConflict(ctx context.Context, tribeID string, conflictType string, options []interface{}) (interface{}, error) {
+    seniorMember, err := ts.GetSeniorMember(ctx, tribeID)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Log the conflict and resolution method
+    conflict := &TribeConflict{
+        TribeID:      tribeID,
+        ConflictType: conflictType,
+        ResolvedBy:   seniorMember.ID,
+        Resolution:   "senior_member_decision",
+        CreatedAt:    time.Now(),
+    }
+    
+    if err := ts.db.LogTribeConflict(ctx, conflict); err != nil {
+        return nil, err
+    }
+    
+    // For now, senior member gets to decide
+    // Could be enhanced with voting mechanisms, etc.
+    return options[0], nil // Default to first option
+}
+
+// Tribe deletion with consensus mechanism
+func (ts *TribeService) DeleteTribe(ctx context.Context, tribeID, requestingUserID string, consensusRequired bool) error {
+    // Validate user is a member
+    if err := ts.ValidateTribeMembership(ctx, requestingUserID, tribeID); err != nil {
+        return err
+    }
+    
+    if consensusRequired {
+        // Check if all members have agreed to deletion
+        members, err := ts.db.GetTribeMembers(ctx, tribeID)
+        if err != nil {
+            return err
+        }
+        
+        approvals, err := ts.db.GetDeletionApprovals(ctx, tribeID)
+        if err != nil {
+            return err
+        }
+        
+        if len(approvals) < len(members) {
+            // Not all members have approved - record this user's approval
+            approval := &TribeDeletionApproval{
+                TribeID:   tribeID,
+                UserID:    requestingUserID,
+                CreatedAt: time.Now(),
+            }
+            return ts.db.RecordDeletionApproval(ctx, approval)
+        }
+    }
+    
+    // All approvals received or consensus not required - delete tribe
+    return ts.db.DeleteTribe(ctx, tribeID)
+}
+
+type TribeUpdateRequest struct {
+    Name                 *string                `json:"name"`
+    Description          *string                `json:"description"`
+    MaxMembers          *int                   `json:"max_members"`
+    DecisionPreferences *DecisionPreferences   `json:"decision_preferences"`
+}
+
+type TribeConflict struct {
+    ID           string    `json:"id"`
+    TribeID      string    `json:"tribe_id"`
+    ConflictType string    `json:"conflict_type"`
+    ResolvedBy   string    `json:"resolved_by"`
+    Resolution   string    `json:"resolution"`
+    CreatedAt    time.Time `json:"created_at"`
+}
+
+type TribeDeletionApproval struct {
+    TribeID   string    `json:"tribe_id"`
+    UserID    string    `json:"user_id"`
+    CreatedAt time.Time `json:"created_at"`
+}
+
+type TribeInvitation struct {
+    ID           string    `json:"id"`
+    TribeID      string    `json:"tribe_id"`
+    InviterID    string    `json:"inviter_id"`
+    InviteeEmail string    `json:"invitee_email"`
+    Status       string    `json:"status"` // pending, accepted, declined, expired
+    CreatedAt    time.Time `json:"created_at"`
+    ExpiresAt    time.Time `json:"expires_at"`
+}
+```
+
+#### Tribe Invitations Table (Enhanced Two-Stage System)
+```sql
+CREATE TABLE tribe_invitations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tribe_id UUID NOT NULL REFERENCES tribes(id) ON DELETE CASCADE,
+    inviter_id UUID NOT NULL REFERENCES users(id),
+    invitee_email VARCHAR(255) NOT NULL,
+    suggested_tribe_display_name VARCHAR(255), -- Inviter can suggest display name
+    status VARCHAR(50) DEFAULT 'pending', -- 'pending', 'accepted_pending_ratification', 'ratified', 'rejected', 'revoked', 'expired'
+    invited_at TIMESTAMPTZ DEFAULT NOW(),
+    accepted_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ DEFAULT NOW() + INTERVAL '7 days',
+    UNIQUE(tribe_id, invitee_email)
+);
+```
+
+#### Tribe Invitation Ratifications Table
+```sql
+CREATE TABLE tribe_invitation_ratifications (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    invitation_id UUID NOT NULL REFERENCES tribe_invitations(id) ON DELETE CASCADE,
+    member_id UUID NOT NULL REFERENCES users(id),
+    vote VARCHAR(50) NOT NULL, -- 'approve', 'reject'
+    voted_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(invitation_id, member_id)
+);
+```
+
+#### Member Removal Petitions Table
+```sql
+CREATE TABLE member_removal_petitions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tribe_id UUID NOT NULL REFERENCES tribes(id) ON DELETE CASCADE,
+    petitioner_id UUID NOT NULL REFERENCES users(id),
+    target_user_id UUID NOT NULL REFERENCES users(id),
+    reason TEXT,
+    status VARCHAR(50) DEFAULT 'active', -- 'active', 'approved', 'rejected'
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    resolved_at TIMESTAMPTZ,
+    UNIQUE(tribe_id, target_user_id) -- Only one active petition per user
+);
+```
+
+#### Member Removal Votes Table
+```sql
+CREATE TABLE member_removal_votes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    petition_id UUID NOT NULL REFERENCES member_removal_petitions(id) ON DELETE CASCADE,
+    voter_id UUID NOT NULL REFERENCES users(id),
+    vote VARCHAR(50) NOT NULL, -- 'approve', 'reject'
+    voted_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(petition_id, voter_id)
+);
+```
+
+#### Tribe Deletion Petitions Table
+```sql
+CREATE TABLE tribe_deletion_petitions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tribe_id UUID NOT NULL REFERENCES tribes(id) ON DELETE CASCADE,
+    petitioner_id UUID NOT NULL REFERENCES users(id),
+    reason TEXT,
+    status VARCHAR(50) DEFAULT 'active', -- 'active', 'approved', 'rejected'
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    resolved_at TIMESTAMPTZ,
+    UNIQUE(tribe_id) -- Only one active deletion petition per tribe
+);
+```
+
+#### Tribe Deletion Votes Table
+```sql
+CREATE TABLE tribe_deletion_votes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    petition_id UUID NOT NULL REFERENCES tribe_deletion_petitions(id) ON DELETE CASCADE,
+    voter_id UUID NOT NULL REFERENCES users(id),
+    vote VARCHAR(50) NOT NULL, -- 'approve', 'reject'
+    voted_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(petition_id, voter_id)
+);
+```
+
+#### List Deletion Petitions Table
+```sql
+CREATE TABLE list_deletion_petitions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    list_id UUID NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
+    petitioner_id UUID NOT NULL REFERENCES users(id),
+    reason TEXT,
+    status VARCHAR(50) DEFAULT 'pending', -- 'pending', 'confirmed', 'cancelled'
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    resolved_at TIMESTAMPTZ,
+    resolved_by_user_id UUID REFERENCES users(id),
+    UNIQUE(list_id) -- Only one active petition per list
+);
+```
+
+#### Tribe Settings Table (for configurable inactivity thresholds)
+```sql
+CREATE TABLE tribe_settings (
+    tribe_id UUID PRIMARY KEY REFERENCES tribes(id) ON DELETE CASCADE,
+    inactivity_threshold_days INTEGER DEFAULT 30, -- 1 to 730 (2 years)
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+#### Enhanced Tribe Memberships Table
+```sql
+-- Add columns to existing tribe_memberships table
+ALTER TABLE tribe_memberships 
+ADD COLUMN last_login_at TIMESTAMPTZ,
+ADD COLUMN is_inactive BOOLEAN DEFAULT FALSE;
+
+-- Update existing constraint
+ALTER TABLE tribe_memberships 
+DROP CONSTRAINT IF EXISTS tribe_memberships_role_check;
+
+ALTER TABLE tribe_memberships 
+ADD CONSTRAINT tribe_memberships_role_check 
+CHECK (role IN ('creator', 'member', 'pending'));
+```
+
+### Democratic Tribe Governance System
+
+```go
+// Enhanced tribe service with democratic governance
+type TribeGovernanceService struct {
+    db repository.Database
+}
+
+// Two-stage invitation system
+func (tgs *TribeGovernanceService) InviteToTribe(ctx context.Context, tribeID, inviterID, inviteeEmail string) (*TribeInvitation, error) {
+    // Validate inviter is a member
+    if err := tgs.validateTribeMembership(ctx, inviterID, tribeID); err != nil {
+        return nil, err
+    }
+    
+    // Check tribe capacity
+    settings, err := tgs.getTribeSettings(ctx, tribeID)
+    if err != nil {
+        return nil, err
+    }
+    
+    memberCount, err := tgs.db.GetTribeMemberCount(ctx, tribeID)
+    if err != nil {
+        return nil, err
+    }
+    
+    if memberCount >= settings.MaxMembers {
+        return nil, errors.New("tribe is at maximum capacity")
+    }
+    
+    // Create invitation (stage 1)
+    invitation := &TribeInvitation{
+        ID:           generateUUID(),
+        TribeID:      tribeID,
+        InviterID:    inviterID,
+        InviteeEmail: inviteeEmail,
+        Status:       "pending",
+        InvitedAt:    time.Now(),
+        ExpiresAt:    time.Now().Add(7 * 24 * time.Hour),
+    }
+    
+    return invitation, tgs.db.CreateTribeInvitation(ctx, invitation)
+}
+
+// Invitee accepts invitation (moves to ratification stage)
+func (tgs *TribeGovernanceService) AcceptInvitation(ctx context.Context, invitationID, userID string) (*TribeInvitation, error) {
+    invitation, err := tgs.db.GetTribeInvitation(ctx, invitationID)
+    if err != nil {
+        return nil, err
+    }
+    
+    if invitation.Status != "pending" {
+        return nil, errors.New("invitation is not in pending state")
+    }
+    
+    if time.Now().After(invitation.ExpiresAt) {
+        invitation.Status = "expired"
+        tgs.db.UpdateTribeInvitation(ctx, invitation)
+        return nil, errors.New("invitation has expired")
+    }
+    
+    // Move to ratification stage
+    invitation.Status = "accepted_pending_ratification"
+    invitation.AcceptedAt = &time.Now()
+    
+    if err := tgs.db.UpdateTribeInvitation(ctx, invitation); err != nil {
+        return nil, err
+    }
+    
+    // Start ratification process - notify all existing members
+    return invitation, tgs.startRatificationProcess(ctx, invitation)
+}
+
+// Existing member votes on ratification
+func (tgs *TribeGovernanceService) VoteOnInvitation(ctx context.Context, invitationID, voterID string, approve bool) error {
+    invitation, err := tgs.db.GetTribeInvitation(ctx, invitationID)
+    if err != nil {
+        return err
+    }
+    
+    if invitation.Status != "accepted_pending_ratification" {
+        return errors.New("invitation is not pending ratification")
+    }
+    
+    // Validate voter is a member
+    if err := tgs.validateTribeMembership(ctx, voterID, invitation.TribeID); err != nil {
+        return err
+    }
+    
+    vote := "approve"
+    if !approve {
+        vote = "reject"
+    }
+    
+    // Record vote
+    ratification := &TribeInvitationRatification{
+        InvitationID: invitationID,
+        MemberID:     voterID,
+        Vote:         vote,
+        VotedAt:      time.Now(),
+    }
+    
+    if err := tgs.db.CreateInvitationRatification(ctx, ratification); err != nil {
+        return err
+    }
+    
+    // If any member rejects, immediately revoke invitation
+    if !approve {
+        invitation.Status = "rejected"
+        return tgs.db.UpdateTribeInvitation(ctx, invitation)
+    }
+    
+    // Check if all members have approved
+    return tgs.checkRatificationComplete(ctx, invitation)
+}
+
+func (tgs *TribeGovernanceService) checkRatificationComplete(ctx context.Context, invitation *TribeInvitation) error {
+    // Get all current members
+    members, err := tgs.db.GetTribeMembers(ctx, invitation.TribeID)
+    if err != nil {
+        return err
+    }
+    
+    // Get all ratification votes
+    votes, err := tgs.db.GetInvitationRatifications(ctx, invitation.ID)
+    if err != nil {
+        return err
+    }
+    
+    // Check if all members have approved
+    approvals := 0
+    for _, vote := range votes {
+        if vote.Vote == "approve" {
+            approvals++
+        }
+    }
+    
+    if approvals >= len(members) {
+        // All members approved - complete ratification
+        invitation.Status = "ratified"
+        if err := tgs.db.UpdateTribeInvitation(ctx, invitation); err != nil {
+            return err
+        }
+        
+        // Add user to tribe
+        membership := &TribeMembership{
+            TribeID:  invitation.TribeID,
+            UserID:   invitation.InviteeUserID, // Set when they accept
+            Role:     "member",
+            JoinedAt: time.Now(),
+        }
+        
+        return tgs.db.CreateTribeMembership(ctx, membership)
+    }
+    
+    return nil // Still waiting for more votes
+}
+
+// Member removal petition system
+func (tgs *TribeGovernanceService) PetitionMemberRemoval(ctx context.Context, tribeID, petitionerID, targetUserID, reason string) (*MemberRemovalPetition, error) {
+    // Validate petitioner is a member
+    if err := tgs.validateTribeMembership(ctx, petitionerID, tribeID); err != nil {
+        return nil, err
+    }
+    
+    // Validate target is a member
+    if err := tgs.validateTribeMembership(ctx, targetUserID, tribeID); err != nil {
+        return nil, err
+    }
+    
+    // Cannot petition to remove yourself
+    if petitionerID == targetUserID {
+        return nil, errors.New("cannot petition to remove yourself - use leave tribe instead")
+    }
+    
+    // Check if petition already exists
+    existing, err := tgs.db.GetActiveMemberRemovalPetition(ctx, tribeID, targetUserID)
+    if err == nil && existing != nil {
+        return nil, errors.New("active petition already exists for this member")
+    }
+    
+    petition := &MemberRemovalPetition{
+        ID:           generateUUID(),
+        TribeID:      tribeID,
+        PetitionerID: petitionerID,
+        TargetUserID: targetUserID,
+        Reason:       reason,
+        Status:       "active",
+        CreatedAt:    time.Now(),
+    }
+    
+    if err := tgs.db.CreateMemberRemovalPetition(ctx, petition); err != nil {
+        return nil, err
+    }
+    
+    return petition, nil
+}
+
+// Vote on member removal
+func (tgs *TribeGovernanceService) VoteOnMemberRemoval(ctx context.Context, petitionID, voterID string, approve bool) error {
+    petition, err := tgs.db.GetMemberRemovalPetition(ctx, petitionID)
+    if err != nil {
+        return err
+    }
+    
+    if petition.Status != "active" {
+        return errors.New("petition is not active")
+    }
+    
+    // Validate voter is a member (but not the target)
+    if err := tgs.validateTribeMembership(ctx, voterID, petition.TribeID); err != nil {
+        return err
+    }
+    
+    if voterID == petition.TargetUserID {
+        return errors.New("target user cannot vote on their own removal")
+    }
+    
+    vote := "approve"
+    if !approve {
+        vote = "reject"
+    }
+    
+    // Record vote
+    removalVote := &MemberRemovalVote{
+        PetitionID: petitionID,
+        VoterID:    voterID,
+        Vote:       vote,
+        VotedAt:    time.Now(),
+    }
+    
+    if err := tgs.db.CreateMemberRemovalVote(ctx, removalVote); err != nil {
+        return err
+    }
+    
+    // If any member rejects, petition fails
+    if !approve {
+        petition.Status = "rejected"
+        petition.ResolvedAt = &time.Now()
+        return tgs.db.UpdateMemberRemovalPetition(ctx, petition)
+    }
+    
+    // Check if all eligible members have approved
+    return tgs.checkMemberRemovalComplete(ctx, petition)
+}
+
+func (tgs *TribeGovernanceService) checkMemberRemovalComplete(ctx context.Context, petition *MemberRemovalPetition) error {
+    // Get all members except the target
+    members, err := tgs.db.GetTribeMembersExcept(ctx, petition.TribeID, petition.TargetUserID)
+    if err != nil {
+        return err
+    }
+    
+    // Get all votes
+    votes, err := tgs.db.GetMemberRemovalVotes(ctx, petition.ID)
+    if err != nil {
+        return err
+    }
+    
+    approvals := 0
+    for _, vote := range votes {
+        if vote.Vote == "approve" {
+            approvals++
+        }
+    }
+    
+    if approvals >= len(members) {
+        // Unanimous approval - remove member
+        petition.Status = "approved"
+        petition.ResolvedAt = &time.Now()
+        
+        if err := tgs.db.UpdateMemberRemovalPetition(ctx, petition); err != nil {
+            return err
+        }
+        
+        // Remove the member
+        return tgs.db.RemoveTribeMember(ctx, petition.TribeID, petition.TargetUserID)
+    }
+    
+    return nil // Still waiting for more votes
+}
+
+// Tribe deletion with 100% consensus
+func (tgs *TribeGovernanceService) PetitionTribeDeletion(ctx context.Context, tribeID, petitionerID, reason string) (*TribeDeletionPetition, error) {
+    // Validate petitioner is a member
+    if err := tgs.validateTribeMembership(ctx, petitionerID, tribeID); err != nil {
+        return nil, err
+    }
+    
+    // Check if petition already exists
+    existing, err := tgs.db.GetActiveTribeDeletionPetition(ctx, tribeID)
+    if err == nil && existing != nil {
+        return nil, errors.New("active deletion petition already exists")
+    }
+    
+    petition := &TribeDeletionPetition{
+        ID:           generateUUID(),
+        TribeID:      tribeID,
+        PetitionerID: petitionerID,
+        Reason:       reason,
+        Status:       "active",
+        CreatedAt:    time.Now(),
+    }
+    
+    if err := tgs.db.CreateTribeDeletionPetition(ctx, petition); err != nil {
+        return nil, err
+    }
+    
+    return petition, nil
+}
+
+// Vote on tribe deletion
+func (tgs *TribeGovernanceService) VoteOnTribeDeletion(ctx context.Context, petitionID, voterID string, approve bool) error {
+    petition, err := tgs.db.GetTribeDeletionPetition(ctx, petitionID)
+    if err != nil {
+        return err
+    }
+    
+    if petition.Status != "active" {
+        return errors.New("petition is not active")
+    }
+    
+    // Validate voter is a member
+    if err := tgs.validateTribeMembership(ctx, voterID, petition.TribeID); err != nil {
+        return err
+    }
+    
+    vote := "approve"
+    if !approve {
+        vote = "reject"
+    }
+    
+    // Record vote
+    deletionVote := &TribeDeletionVote{
+        PetitionID: petitionID,
+        VoterID:    voterID,
+        Vote:       vote,
+        VotedAt:    time.Now(),
+    }
+    
+    if err := tgs.db.CreateTribeDeletionVote(ctx, deletionVote); err != nil {
+        return err
+    }
+    
+    // If any member rejects, petition fails
+    if !approve {
+        petition.Status = "rejected"
+        petition.ResolvedAt = &time.Now()
+        return tgs.db.UpdateTribeDeletionPetition(ctx, petition)
+    }
+    
+    // Check if all members have approved
+    return tgs.checkTribeDeletionComplete(ctx, petition)
+}
+
+func (tgs *TribeGovernanceService) checkTribeDeletionComplete(ctx context.Context, petition *TribeDeletionPetition) error {
+    // Get all members
+    members, err := tgs.db.GetTribeMembers(ctx, petition.TribeID)
+    if err != nil {
+        return err
+    }
+    
+    // Get all votes
+    votes, err := tgs.db.GetTribeDeletionVotes(ctx, petition.ID)
+    if err != nil {
+        return err
+    }
+    
+    approvals := 0
+    for _, vote := range votes {
+        if vote.Vote == "approve" {
+            approvals++
+        }
+    }
+    
+    if approvals >= len(members) {
+        // 100% consensus achieved - delete tribe
+        petition.Status = "approved"
+        petition.ResolvedAt = &time.Now()
+        
+        if err := tgs.db.UpdateTribeDeletionPetition(ctx, petition); err != nil {
+            return err
+        }
+        
+        // Delete the tribe
+        return tgs.db.DeleteTribe(ctx, petition.TribeID)
+    }
+    
+    return nil // Still waiting for more votes
+}
+
+// List deletion petition system (simpler - only needs one confirmation)
+func (tgs *TribeGovernanceService) PetitionListDeletion(ctx context.Context, listID, petitionerID, reason string) (*ListDeletionPetition, error) {
+    list, err := tgs.db.GetList(ctx, listID)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Only applies to tribe lists
+    if list.OwnerType != "tribe" {
+        return nil, errors.New("list deletion petitions only apply to tribe lists")
+    }
+    
+    // Validate petitioner is a tribe member
+    if err := tgs.validateTribeMembership(ctx, petitionerID, list.OwnerID); err != nil {
+        return nil, err
+    }
+    
+    petition := &ListDeletionPetition{
+        ID:           generateUUID(),
+        ListID:       listID,
+        PetitionerID: petitionerID,
+        Reason:       reason,
+        Status:       "pending",
+        CreatedAt:    time.Now(),
+    }
+    
+    return petition, tgs.db.CreateListDeletionPetition(ctx, petition)
+}
+
+// Confirm or cancel list deletion
+func (tgs *TribeGovernanceService) ResolveListDeletion(ctx context.Context, petitionID, resolverID string, confirm bool) error {
+    petition, err := tgs.db.GetListDeletionPetition(ctx, petitionID)
+    if err != nil {
+        return err
+    }
+    
+    if petition.Status != "pending" {
+        return errors.New("petition is not pending")
+    }
+    
+    list, err := tgs.db.GetList(ctx, petition.ListID)
+    if err != nil {
+        return err
+    }
+    
+    // Validate resolver is a tribe member
+    if err := tgs.validateTribeMembership(ctx, resolverID, list.OwnerID); err != nil {
+        return err
+    }
+    
+    status := "cancelled"
+    if confirm {
+        status = "confirmed"
+    }
+    
+    petition.Status = status
+    petition.ResolvedAt = &time.Now()
+    petition.ResolvedByUserID = &resolverID
+    
+    if err := tgs.db.UpdateListDeletionPetition(ctx, petition); err != nil {
+        return err
+    }
+    
+    // If confirmed, delete the list
+    if confirm {
+        return tgs.db.DeleteList(ctx, petition.ListID)
+    }
+    
+    return nil
+}
+
+// Helper function to validate tribe membership
+func (tgs *TribeGovernanceService) validateTribeMembership(ctx context.Context, userID, tribeID string) error {
+    isMember, err := tgs.db.IsUserTribeMember(ctx, userID, tribeID)
+    if err != nil {
+        return err
+    }
+    if !isMember {
+        return errors.New("user is not a member of this tribe")
+    }
+    return nil
+}
+
+// Get tribe settings including inactivity threshold
+func (tgs *TribeGovernanceService) getTribeSettings(ctx context.Context, tribeID string) (*TribeSettings, error) {
+    settings, err := tgs.db.GetTribeSettings(ctx, tribeID)
+    if err != nil {
+        // Create default settings if none exist
+        defaultSettings := &TribeSettings{
+            TribeID:                tribeID,
+            InactivityThresholdDays: 30,
+            CreatedAt:              time.Now(),
+            UpdatedAt:              time.Now(),
+        }
+        if err := tgs.db.CreateTribeSettings(ctx, defaultSettings); err != nil {
+            return nil, err
+        }
+        return defaultSettings, nil
+    }
+    return settings, nil
+}
+
+// Data structures for the new governance system
+type TribeInvitation struct {
+    ID             string     `json:"id"`
+    TribeID        string     `json:"tribe_id"`
+    InviterID      string     `json:"inviter_id"`
+    InviteeEmail   string     `json:"invitee_email"`
+    InviteeUserID  *string    `json:"invitee_user_id"` // Set when they accept
+    Status         string     `json:"status"`
+    InvitedAt      time.Time  `json:"invited_at"`
+    AcceptedAt     *time.Time `json:"accepted_at"`
+    ExpiresAt      time.Time  `json:"expires_at"`
+}
+
+type TribeInvitationRatification struct {
+    InvitationID string    `json:"invitation_id"`
+    MemberID     string    `json:"member_id"`
+    Vote         string    `json:"vote"`
+    VotedAt      time.Time `json:"voted_at"`
+}
+
+type MemberRemovalPetition struct {
+    ID           string     `json:"id"`
+    TribeID      string     `json:"tribe_id"`
+    PetitionerID string     `json:"petitioner_id"`
+    TargetUserID string     `json:"target_user_id"`
+    Reason       string     `json:"reason"`
+    Status       string     `json:"status"`
+    CreatedAt    time.Time  `json:"created_at"`
+    ResolvedAt   *time.Time `json:"resolved_at"`
+}
+
+type MemberRemovalVote struct {
+    PetitionID string    `json:"petition_id"`
+    VoterID    string    `json:"voter_id"`
+    Vote       string    `json:"vote"`
+    VotedAt    time.Time `json:"voted_at"`
+}
+
+type TribeDeletionPetition struct {
+    ID           string     `json:"id"`
+    TribeID      string     `json:"tribe_id"`
+    PetitionerID string     `json:"petitioner_id"`
+    Reason       string     `json:"reason"`
+    Status       string     `json:"status"`
+    CreatedAt    time.Time  `json:"created_at"`
+    ResolvedAt   *time.Time `json:"resolved_at"`
+}
+
+type TribeDeletionVote struct {
+    PetitionID string    `json:"petition_id"`
+    VoterID    string    `json:"voter_id"`
+    Vote       string    `json:"vote"`
+    VotedAt    time.Time `json:"voted_at"`
+}
+
+type ListDeletionPetition struct {
+    ID                 string     `json:"id"`
+    ListID             string     `json:"list_id"`
+    PetitionerID       string     `json:"petitioner_id"`
+    Reason             string     `json:"reason"`
+    Status             string     `json:"status"`
+    CreatedAt          time.Time  `json:"created_at"`
+    ResolvedAt         *time.Time `json:"resolved_at"`
+    ResolvedByUserID   *string    `json:"resolved_by_user_id"`
+}
+
+type TribeSettings struct {
+    TribeID                string    `json:"tribe_id"`
+    InactivityThresholdDays int       `json:"inactivity_threshold_days"`
+    CreatedAt              time.Time `json:"created_at"`
+    UpdatedAt              time.Time `json:"updated_at"`
+}
+```
+
+### Decision Session Management with Timeouts
+
+```go
+// Enhanced decision session service with timeout management
+type DecisionSessionService struct {
+    db repository.Database
+}
+
+// Update session activity (called on any user interaction)
+func (dss *DecisionSessionService) UpdateSessionActivity(ctx context.Context, sessionID string) error {
+    return dss.db.UpdateSessionActivity(ctx, sessionID, time.Now())
+}
+
+// Check for expired sessions (run periodically)
+func (dss *DecisionSessionService) ProcessExpiredSessions(ctx context.Context) error {
+    cutoffTime := time.Now().Add(-30 * time.Minute)
+    expiredSessions, err := dss.db.GetInactiveSessionsSince(ctx, cutoffTime)
+    if err != nil {
+        return err
+    }
+    
+    for _, session := range expiredSessions {
+        if err := dss.expireSession(ctx, session.ID); err != nil {
+            log.Printf("Failed to expire session %s: %v", session.ID, err)
+        }
+    }
+    
+    return nil
+}
+
+// Expire a session due to inactivity
+func (dss *DecisionSessionService) expireSession(ctx context.Context, sessionID string) error {
+    session, err := dss.db.GetDecisionSession(ctx, sessionID)
+    if err != nil {
+        return err
+    }
+    
+    // Only expire active sessions
+    if session.Status != "configuring" && session.Status != "eliminating" {
+        return nil
+    }
+    
+    session.Status = "expired"
+    session.CompletedAt = &time.Now()
+    
+    return dss.db.UpdateDecisionSession(ctx, session)
+}
+
+// Complete session and set up history retention
+func (dss *DecisionSessionService) CompleteSession(ctx context.Context, sessionID string, finalResult *DecisionResult) error {
+    session, err := dss.db.GetDecisionSession(ctx, sessionID)
+    if err != nil {
+        return err
+    }
+    
+    session.Status = "completed"
+    session.CompletedAt = &time.Now()
+    session.ExpiresAt = &time.Now().Add(30 * 24 * time.Hour) // 1 month retention
+    session.FinalSelectionID = finalResult.WinnerID
+    session.RunnersUp = finalResult.RunnersUpIDs
+    session.EliminationHistory = finalResult.EliminationHistory
+    
+    return dss.db.UpdateDecisionSession(ctx, session)
+}
+
+// Pin session to prevent automatic cleanup
+func (dss *DecisionSessionService) PinSession(ctx context.Context, sessionID, userID string) error {
+    // Verify user has access to this session
+    session, err := dss.db.GetDecisionSession(ctx, sessionID)
+    if err != nil {
+        return err
+    }
+    
+    // Validate user is tribe member
+    isMember, err := dss.db.IsUserTribeMember(ctx, userID, session.TribeID)
+    if err != nil {
+        return err
+    }
+    if !isMember {
+        return errors.New("user is not a member of this tribe")
+    }
+    
+    session.IsPinned = true
+    return dss.db.UpdateDecisionSession(ctx, session)
+}
+
+// Get formatted decision history for display
+func (dss *DecisionSessionService) GetDecisionHistory(ctx context.Context, sessionID, userID string) (*DecisionHistory, error) {
+    session, err := dss.db.GetDecisionSession(ctx, sessionID)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Verify user has access
+    isMember, err := dss.db.IsUserTribeMember(ctx, userID, session.TribeID)
+    if err != nil {
+        return nil, err
+    }
+    if !isMember {
+        return nil, errors.New("user is not a member of this tribe")
+    }
+    
+    // Get tribe settings for elimination visibility
+    tribe, err := dss.db.GetTribe(ctx, session.TribeID)
+    if err != nil {
+        return nil, err
+    }
+    
+    history := &DecisionHistory{
+        SessionID:     sessionID,
+        SessionName:   session.Name,
+        Status:        session.Status,
+        CreatedAt:     session.CreatedAt,
+        CompletedAt:   session.CompletedAt,
+        IsPinned:      session.IsPinned,
+        ShowDetails:   tribe.ShowEliminationDetails,
+    }
+    
+    // Get list items for display
+    if session.FinalSelectionID != nil {
+        winner, err := dss.db.GetListItem(ctx, *session.FinalSelectionID)
+        if err == nil {
+            history.Winner = winner
+        }
+    }
+    
+    // Get runners-up
+    if len(session.RunnersUp) > 0 {
+        runnersUp, err := dss.db.GetListItems(ctx, session.RunnersUp)
+        if err == nil {
+            history.RunnersUp = runnersUp
+        }
+    }
+    
+    // Parse elimination history (stored as JSON)
+    var eliminations []EliminationHistoryEntry
+    if err := json.Unmarshal(session.EliminationHistory, &eliminations); err == nil {
+        // Reverse order for display (most recent elimination first)
+        for i := len(eliminations) - 1; i >= 0; i-- {
+            elimination := eliminations[i]
+            
+            // Get list item details
+            item, err := dss.db.GetListItem(ctx, elimination.ItemID)
+            if err != nil {
+                continue
+            }
+            
+            historyEntry := DecisionHistoryEntry{
+                Item:          item,
+                EliminatedAt:  elimination.EliminatedAt,
+                Round:         elimination.Round,
+                EliminationOrder: len(eliminations) - i, // 1-based order
+            }
+            
+            // Include eliminator info if visibility enabled
+            if tribe.ShowEliminationDetails {
+                eliminator, err := dss.db.GetUser(ctx, elimination.EliminatorID)
+                if err == nil {
+                    // Get tribe-specific display name
+                    membership, err := dss.db.GetTribeMembership(ctx, session.TribeID, elimination.EliminatorID)
+                    if err == nil && membership.TribeDisplayName != "" {
+                        historyEntry.EliminatorName = membership.TribeDisplayName
+                    } else {
+                        historyEntry.EliminatorName = eliminator.DisplayName
+                    }
+                }
+            }
+            
+            history.Eliminations = append(history.Eliminations, historyEntry)
+        }
+    }
+    
+    return history, nil
+}
+
+// Clean up expired session histories (run daily)
+func (dss *DecisionSessionService) CleanupExpiredHistories(ctx context.Context) error {
+    expiredSessions, err := dss.db.GetExpiredUnpinnedSessions(ctx)
+    if err != nil {
+        return err
+    }
+    
+    for _, session := range expiredSessions {
+        if err := dss.db.DeleteDecisionSession(ctx, session.ID); err != nil {
+            log.Printf("Failed to delete expired session %s: %v", session.ID, err)
+        }
+    }
+    
+    return nil
+}
+
+// Mobile-optimized session status for polling
+func (dss *DecisionSessionService) GetMobileSessionStatus(ctx context.Context, sessionID, userID string) (*MobileSessionStatus, error) {
+    // Update activity when checking status
+    if err := dss.UpdateSessionActivity(ctx, sessionID); err != nil {
+        return nil, err
+    }
+    
+    session, err := dss.db.GetDecisionSession(ctx, sessionID)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Check if session has expired
+    if session.Status == "configuring" || session.Status == "eliminating" {
+        inactiveTime := time.Since(session.LastActivityAt)
+        if inactiveTime > time.Duration(session.SessionTimeoutMinutes)*time.Minute {
+            // Expire the session
+            if err := dss.expireSession(ctx, sessionID); err != nil {
+                return nil, err
+            }
+            session.Status = "expired"
+        }
+    }
+    
+    status := &MobileSessionStatus{
+        SessionID:         sessionID,
+        Status:            session.Status,
+        CurrentCandidates: []ListItemSummary{}, // Simplified for mobile
+        IsYourTurn:        false,
+        TurnTimeRemaining: 0,
+        SessionTimeRemaining: 0,
+    }
+    
+    // Calculate remaining time
+    if session.Status == "eliminating" {
+        sessionTimeout := time.Duration(session.SessionTimeoutMinutes) * time.Minute
+        elapsed := time.Since(session.LastActivityAt)
+        if elapsed < sessionTimeout {
+            status.SessionTimeRemaining = int((sessionTimeout - elapsed).Seconds())
+        }
+        
+        // Check if it's user's turn
+        if len(session.EliminationOrder) > 0 {
+            currentUserID := session.EliminationOrder[session.CurrentTurnIndex]
+            status.IsYourTurn = (currentUserID == userID)
+            
+            if status.IsYourTurn && session.TurnStartedAt != nil {
+                turnTimeout := time.Duration(session.TurnTimeoutMinutes) * time.Minute
+                turnElapsed := time.Since(*session.TurnStartedAt)
+                if turnElapsed < turnTimeout {
+                    status.TurnTimeRemaining = int((turnTimeout - turnElapsed).Seconds())
+                }
+            }
+        }
+    }
+    
+    // Get simplified candidate list for mobile
+    if len(session.CurrentCandidates) > 0 {
+        items, err := dss.db.GetListItems(ctx, session.CurrentCandidates)
+        if err == nil {
+            for _, item := range items {
+                status.CurrentCandidates = append(status.CurrentCandidates, ListItemSummary{
+                    ID:          item.ID,
+                    Name:        item.Name,
+                    Category:    item.Category,
+                    Tags:        item.Tags[:min(3, len(item.Tags))], // Limit tags for mobile
+                })
+            }
+        }
+    }
+    
+    return status, nil
+}
+
+// Data structures for session management
+type DecisionResult struct {
+    WinnerID           *string                    `json:"winner_id"`
+    RunnersUpIDs       []string                   `json:"runners_up_ids"`
+    EliminationHistory json.RawMessage            `json:"elimination_history"`
+}
+
+type EliminationHistoryEntry struct {
+    ItemID        string    `json:"item_id"`
+    EliminatorID  string    `json:"eliminator_id"`
+    Round         int       `json:"round"`
+    EliminatedAt  time.Time `json:"eliminated_at"`
+}
+
+type DecisionHistory struct {
+    SessionID     string                    `json:"session_id"`
+    SessionName   string                    `json:"session_name"`
+    Status        string                    `json:"status"`
+    CreatedAt     time.Time                 `json:"created_at"`
+    CompletedAt   *time.Time                `json:"completed_at"`
+    IsPinned      bool                      `json:"is_pinned"`
+    ShowDetails   bool                      `json:"show_details"`
+    Winner        *ListItem                 `json:"winner"`
+    RunnersUp     []ListItem                `json:"runners_up"`
+    Eliminations  []DecisionHistoryEntry    `json:"eliminations"`
+}
+
+type DecisionHistoryEntry struct {
+    Item             *ListItem `json:"item"`
+    EliminatorName   string    `json:"eliminator_name"`
+    EliminatedAt     time.Time `json:"eliminated_at"`
+    Round            int       `json:"round"`
+    EliminationOrder int       `json:"elimination_order"` // 1 = last eliminated, 2 = second-to-last, etc.
+}
+
+type MobileSessionStatus struct {
+    SessionID            string             `json:"session_id"`
+    Status               string             `json:"status"`
+    CurrentCandidates    []ListItemSummary  `json:"current_candidates"`
+    IsYourTurn           bool               `json:"is_your_turn"`
+    TurnTimeRemaining    int                `json:"turn_time_remaining"`    // seconds
+    SessionTimeRemaining int                `json:"session_time_remaining"` // seconds
+}
+
+type ListItemSummary struct {
+    ID       string   `json:"id"`
+    Name     string   `json:"name"`
+    Category string   `json:"category"`
+    Tags     []string `json:"tags"`
+}

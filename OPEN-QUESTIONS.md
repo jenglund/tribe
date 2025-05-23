@@ -59,13 +59,15 @@ This document contains ambiguities, unclear specifications, unresolved questions
 - [x] **Decision made**: List sharing permissions model
   - **Read-only sharing**: Shared lists are view-only for recipients
   - **Owner-only modifications**: Only list owners can edit or re-share lists
-  - **List ownership**: User owns personal lists, any tribe member owns tribe lists
+  - **List ownership**: User owns personal lists, tribe collectively owns tribe lists
+  - **Tribe member equality**: All tribe members have equal rights to tribe lists and tribe management
   - **No re-sharing**: Recipients cannot re-share lists (designed to support, not implemented initially)
   - **Revocable shares**: List owners can revoke sharing at any time
   - **Tribe departure rules**:
     - User loses access to tribe's internal lists
     - User loses access to lists shared with the tribe (unless separately shared with user)
     - User's lists shared with tribe default to unshared, with option to preserve sharing
+    - Remaining tribe members retain full access and control over tribe resources
 
 ## Decision-Making Algorithm
 
@@ -106,11 +108,20 @@ This document contains ambiguities, unclear specifications, unresolved questions
 - Smart sorting prioritizes better matches
 
 ### Real-time vs Turn-based Elimination
-- [ ] **Major UX decision**: How should elimination rounds work?
-  - Real-time with WebSockets (Claude4 suggests this as future)
-  - Turn-based with polling
-  - Asynchronous with notifications
-  - Simple refresh-to-update model
+- [x] **Decision made**: Turn-based elimination with polling updates
+  - **One elimination per round**: Users eliminate ONE choice per round (K = number of rounds)
+  - **Randomized order**: Elimination order shuffled at start and maintained (e.g., BCA → BCABCA for K=2)
+  - **Shared visibility**: All participants see remaining options after each elimination
+  - **Polling updates**: Client polls API every 5-10 seconds for updates
+  - **Timeout handling**: 5-minute timeout per turn, then skip to next user
+  - **Catch-up mechanism**: Skipped users can rejoin and apply missed eliminations at end
+  - **Adaptive M value**: If unresolved turns remain, increase M to accommodate extra options
+
+**Implementation Details:**
+- Session state tracks current turn, elimination order, skipped users
+- Polling endpoint returns current candidates and whose turn it is
+- Timeout system automatically advances turns
+- End-of-round catch-up phase for missed eliminations
 
 ## List Item Metadata
 
@@ -133,9 +144,20 @@ This document contains ambiguities, unclear specifications, unresolved questions
   - Activity types: how to categorize non-restaurant items?
 
 ### Visit History Tracking
-- [ ] **Clarification needed**: What constitutes a "visit"
-- [ ] **Question**: How to handle group visits - individual or shared logging?
-- [ ] **Question**: Can visit history be edited or deleted?
+- [x] **Decision made**: Flexible activity logging with tentative future entries
+  - **Any user can log**: Users can record activity for any list item, whether they participated or not
+  - **Auto-filled defaults**: Time defaults to "now", participants default to full tribe (both editable)
+  - **Decision integration**: Completing decision offers option to log "doing this now/at time X"
+  - **Tentative entries**: Future-dated activities marked as "tentative" and highlighted in UI
+  - **Confirmation workflow**: Any tribe member can confirm/cancel tentative entries
+  - **Flexible participation**: Can specify any subset of tribe members as participants
+
+**Activity Entry Types:**
+- **Immediate**: Recorded as happening "now" (confirmed)
+- **Past**: Recorded for previous date (confirmed) 
+- **Tentative**: Planned for future date (requires confirmation)
+- **Confirmed**: Tentative entry that's been verified as completed
+- **Cancelled**: Tentative entry that didn't happen
 
 ## Sharing and Permissions
 
@@ -176,14 +198,35 @@ This document contains ambiguities, unclear specifications, unresolved questions
 
 ## User Experience Questions
 
+### Platform Prioritization
+- [x] **Decision made**: Mobile web experience is primary focus
+  - Mobile web app optimized for on-the-go usage
+  - Desktop web secondary (for list curation, detailed management)
+  - No native mobile app development planned
+  - Mobile-first design philosophy
+
+### Display Name System
+- [x] **Decision made**: Global + per-tribe display name system
+  - Users have default display name (configurable in profile)
+  - Users can set tribe-specific display names when becoming full member
+  - Inviting user can suggest initial tribe display name for invitee
+  - Supports both privacy-focused and real-name-focused tribes
+  - Accommodates different tribe cultures and privacy preferences
+
 ### Onboarding Flow
-- [ ] **Question**: What's the first-run experience for new users?
-- [ ] **Question**: Should there be sample/demo data?
-- [ ] **Question**: How do users discover and join existing tribes?
+- [x] **Decision made**: Invitation-driven growth model
+  - Users don't seek out tribes - tribes invite new users
+  - New users typically join because existing user wants to add them
+  - No social media "discoverability" features
+  - Focus on intimate, close-knit groups (max 8 people)
+  - Platform philosophy: deliberately non-expandable, invitation-only growth
 
 ### Mobile Experience
-- [ ] **Scope question**: Mobile web app vs native app vs responsive web
-- [ ] **Question**: Offline capability requirements
+- [x] **Decision made**: Mobile web app with responsive design
+  - Progressive Web App (PWA) features for mobile usage
+  - Optimized for touch interactions and smaller screens
+  - Desktop web provides enhanced experience for list management
+  - No offline capability requirements for MVP
 
 ### Error Handling
 - [ ] **Specification needed**: User-facing error messages and recovery flows
@@ -223,20 +266,63 @@ This document contains ambiguities, unclear specifications, unresolved questions
 
 ## Data Model Edge Cases
 
-### Tribe Management
-- [ ] **Question**: What happens when tribe creator leaves or deletes account?
-- [ ] **Question**: Can tribe ownership be transferred?
-- [ ] **Question**: How to handle inactive/abandoned tribes?
+### Tribe Management (Common Ownership Model)
+- [x] **Decision made**: Common ownership model for all tribe members
+  - **Equal Rights**: All tribe members have equal control and permissions
+  - **No Single Owner**: Creator role is informational only, not functional
+  - **Conflict Resolution**: Longest-standing member serves as tie-breaker when needed
+  - **Collective Ownership**: All members can invite, remove others, modify tribe settings
+  - **Democratic Operations**: Any member can start decision sessions, create tribe lists
+
+**Edge Cases Requiring Resolution:**
+- [x] **Tribe Deletion**: Requires 100% consensus of all members
+  - All members must explicitly approve tribe deletion
+  - Deletion remains pending until all members have voted to approve
+- [x] **Malicious Member Removal**: Unanimous vote required (very high barrier)
+  - Any member can petition for removal of another member
+  - Every other member (excluding the one being voted on) must agree
+  - Designed to be exceptional, not routine - protects against mass removal
+- [x] **Creator Departure**: System handles gracefully since creator role is non-functional
+  - Longest-standing remaining member becomes new "senior member" for tie-breaking
+- [x] **Invitation Management**: Two-stage ratification system
+  - Invitees appear as "pending" members visible to all tribe members
+  - Invitees see basic invite prompt but cannot access tribe details
+  - ANY existing member can reject invitee (immediate revocation)
+  - New members need: (1) accept invite AND (2) unanimous approval from existing members
+- [x] **Inactive Member Handling**: Configurable inactivity thresholds with petition system
+  - Default: can petition for removal after 1 month of inactivity
+  - Configurable per-tribe: 1 day to 2 years
+  - After 2+ years: automatic cleanup under privacy laws (low priority)
+  - Still requires unanimous vote from other members to actually remove
+
+**Tribe List Deletion:**
+- [x] **Decision made**: Petition + single confirmation system
+  - Any member can petition for tribe list deletion
+  - List appears as "pending deletion" to all members
+  - Any other member can confirm OR cancel the deletion
+  - Petitioner can immediately re-petition if cancelled
+  - Lower barrier than member removal since lists can be rebuilt
 
 ### List Management
-- [ ] **Question**: Bulk operations support (import, export, bulk edit)?
-- [ ] **Question**: List versioning or change history?
-- [ ] **Question**: Maximum limits (items per list, lists per user, etc.)?
+- [x] **Updated**: Tribe list ownership aligns with common ownership
+  - Any tribe member can create, edit, delete tribe lists
+  - Any tribe member can share tribe lists with external users/tribes
+  - No special permissions for list creator within tribe context
 
 ### Decision Session Management
-- [ ] **Question**: How long do decision sessions remain active?
-- [ ] **Question**: Can decision sessions be paused and resumed?
-- [ ] **Question**: History retention for completed decisions?
+- [x] **Decision made**: 30-minute inactivity timeout for incomplete sessions
+  - Session expires after 30 minutes without activity from any participant
+  - No pause/resume functionality - sessions are time-bound and immediate
+  - Designed for real-time collaborative decision-making
+- [x] **Decision made**: One-month history retention with pinning option
+  - Completed session results persist for 1 month automatically
+  - Users can pin/sticky sessions to prevent automatic cleanup
+  - History display order: final result → runners-up (M set) → reverse chronological eliminations
+  - Shows elimination timeline: "last eliminated" → "first eliminated"
+- [x] **Decision made**: Configurable elimination visibility per tribe
+  - Default: show who eliminated what (transparency)
+  - Tribes can configure to hide elimination details if desired
+  - Promotes accountability while allowing privacy when needed
 
 ## Future Feature Considerations
 
@@ -266,20 +352,75 @@ This document contains ambiguities, unclear specifications, unresolved questions
 - Concurrent sessions supported
 - Simple JWT tokens (7-day expiry) for MVP - no refresh tokens initially
 
+**Tribe Ownership:**
+- Common ownership model: all members have equal rights and control
+- Creator role is informational only, not functional
+- Senior member (longest-standing) serves as tie-breaker for conflicts
+- Democratic governance with petition and voting systems
+- Very high barriers for member removal (unanimous vote of all other members)
+- 100% consensus required for tribe deletion
+- Two-stage invitation system with ratification by existing members
+
+**Member Management:**
+- Invitation process: invite → accept → unanimous ratification by existing members
+- ANY existing member can reject an invitee (immediate revocation)
+- Member removal requires petition + unanimous vote from all other members
+- Configurable inactivity thresholds (1 day to 2 years, default 30 days)
+- Inactive members can be petitioned for removal but still need unanimous vote
+
+**List Management:**
+- Personal lists: owner can delete immediately
+- Tribe lists: petition + single member confirmation system
+- Any member can petition for tribe list deletion
+- Any other member can confirm or cancel the deletion
+- Lower barrier than member removal since lists can be rebuilt
+
 **Permissions:**
 - Read-only list sharing
-- Owner-only modifications and re-sharing
+- Owner-only modifications and re-sharing for personal lists
+- Any tribe member can manage tribe lists collectively
 - Revocable shares
 - Complex tribe departure rules
 
 **Decision Algorithm:**
-- N = tribe size, K = 2, M = 3 (configurable)
-- Reduction algorithm for insufficient results
+- N = tribe size, K = number of elimination rounds, M = 3 (configurable)
+- Turn-based elimination: one item per round per user
+- Randomized elimination order maintained throughout
+- 5-minute timeouts with skip/catch-up mechanism
+- Adaptive M value for unresolved eliminations
+- Polling-based updates (5-10 second intervals)
+
+**Activity Tracking:**
+- Flexible logging by any user for any list item
+- Tentative vs confirmed entry system
+- Auto-populated defaults with user override capability
+- Integration with decision results
+- Tribe member confirmation workflow for tentative entries
 
 **Filter System:**
 - User-configurable priority order
 - Hard vs soft filter distinction
 - Violation tracking and smart sorting
 - Drag-and-drop filter management UI
+
+**Decision Sessions:**
+- 30-minute inactivity timeout for incomplete sessions
+- No pause/resume - designed for immediate, time-bound decisions
+- One-month automatic history retention with optional pinning
+- History shows: winner → runners-up → reverse chronological eliminations
+- Configurable elimination visibility per tribe (default: transparent)
+
+**Platform & UX:**
+- Mobile web experience is primary focus (Progressive Web App)
+- Desktop web secondary for detailed list management
+- No native mobile app development
+- Invitation-driven growth model - no social discoverability
+- Maximum 8 members per tribe (deliberately intimate design)
+
+**Display Names:**
+- Global default display name configurable in user profile
+- Per-tribe display names set when becoming full member
+- Inviting user can suggest tribe-specific name for invitee
+- Supports both privacy-focused and real-name tribes
 
 These questions should be resolved through discussion and decision-making before proceeding with detailed implementation planning. 
