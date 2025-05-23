@@ -331,6 +331,10 @@ CREATE INDEX idx_list_shares_list ON list_shares(list_id);
 CREATE INDEX idx_list_shares_user ON list_shares(shared_with_user_id);
 CREATE INDEX idx_list_shares_tribe ON list_shares(shared_with_tribe_id);
 
+-- Filter configuration indexes
+CREATE INDEX idx_filter_configurations_user ON filter_configurations(user_id);
+CREATE INDEX idx_filter_configurations_default ON filter_configurations(user_id, is_default) WHERE is_default = true;
+
 -- Geospatial index for location queries (if PostGIS is available)
 -- CREATE INDEX idx_list_items_location ON list_items USING GIST((location->>'lat')::float, (location->>'lng')::float);
 ```
@@ -600,11 +604,31 @@ POST   /api/v1/uploads/list-image   # Upload list item image
 - **Extensible Design**: Interface to support multiple providers
 - **Key Requirements**: Extract verified email address
 
-### Session Management (Recommended: Hybrid JWT)
-- **Access Tokens**: Short-lived JWT (30 minutes)
-- **Refresh Tokens**: Longer-lived (7 days), stored server-side
+### Session Management (Simple JWT for MVP)
+- **Access Tokens**: JWT with 7-day expiry (no refresh tokens initially)
+- **Storage**: Frontend localStorage with fallback to sessionStorage
 - **Concurrent Sessions**: Supported across multiple devices
-- **Auto-refresh**: Frontend handles token refresh automatically
+- **Token Claims**: User ID, email, expiry timestamp
+- **Migration Path**: Adding refresh tokens later requires minimal changes
+
+```go
+// JWT Token Structure
+type JWTClaims struct {
+    UserID    string `json:"user_id"`
+    Email     string `json:"email"`
+    Provider  string `json:"provider"`
+    ExpiresAt int64  `json:"exp"`
+    IssuedAt  int64  `json:"iat"`
+    jwt.StandardClaims
+}
+
+// JWT Configuration
+type JWTConfig struct {
+    SecretKey    string        // From environment
+    ExpiryTime   time.Duration // 7 days for MVP
+    Issuer       string        // "tribe-app"
+}
+```
 
 ### Authorization Model
 - **List Ownership**: Users own personal lists, any tribe member can modify tribe lists
@@ -613,6 +637,250 @@ POST   /api/v1/uploads/list-image   # Upload list item image
 - **Tribe Departure**: Complex rules for maintaining/losing access to shared content
 
 ## Decision-Making Algorithm (Enhanced)
+
+### Advanced Filter Engine with Priority System
+
+```go
+// Filter Configuration
+type FilterItem struct {
+    ID          string      `json:"id"`           // Unique filter identifier
+    Type        string      `json:"type"`         // "category", "dietary", "location", etc.
+    IsHard      bool        `json:"is_hard"`      // true = required, false = preferred
+    Priority    int         `json:"priority"`     // User-defined order (0 = highest)
+    Criteria    interface{} `json:"criteria"`     // Type-specific filter data
+    Description string      `json:"description"`  // Human-readable description
+}
+
+type FilterConfiguration struct {
+    Items  []FilterItem `json:"items"`
+    UserID string       `json:"user_id"`
+}
+
+// Filter Results with Violation Tracking
+type FilterResult struct {
+    Item                ListItem           `json:"item"`
+    PassedHardFilters   bool              `json:"passed_hard_filters"`
+    SoftFilterResults   []SoftFilterResult `json:"soft_filter_results"`
+    ViolationCount      int               `json:"violation_count"`
+    PriorityScore       float64           `json:"priority_score"`
+}
+
+type SoftFilterResult struct {
+    FilterID    string `json:"filter_id"`
+    FilterType  string `json:"filter_type"`
+    Passed      bool   `json:"passed"`
+    Priority    int    `json:"priority"`
+    Description string `json:"description"`
+}
+
+// Enhanced Filter Engine
+type FilterEngine struct {
+    db repository.Database
+}
+
+func (fe *FilterEngine) ApplyFiltersWithPriority(ctx context.Context, items []ListItem, config FilterConfiguration) ([]FilterResult, error) {
+    results := make([]FilterResult, 0, len(items))
+    
+    // Sort filters by priority (lowest number = highest priority)
+    sort.Slice(config.Items, func(i, j int) bool {
+        return config.Items[i].Priority < config.Items[j].Priority
+    })
+    
+    for _, item := range items {
+        result := FilterResult{
+            Item:              item,
+            PassedHardFilters: true,
+            SoftFilterResults: make([]SoftFilterResult, 0),
+            ViolationCount:    0,
+        }
+        
+        // Apply filters in priority order
+        for _, filter := range config.Items {
+            passed := fe.evaluateFilter(ctx, item, filter)
+            
+            if filter.IsHard {
+                if !passed {
+                    result.PassedHardFilters = false
+                    break // Skip this item entirely
+                }
+            } else {
+                // Soft filter - track result but don't exclude
+                softResult := SoftFilterResult{
+                    FilterID:    filter.ID,
+                    FilterType:  filter.Type,
+                    Passed:      passed,
+                    Priority:    filter.Priority,
+                    Description: filter.Description,
+                }
+                result.SoftFilterResults = append(result.SoftFilterResults, softResult)
+                
+                if !passed {
+                    result.ViolationCount++
+                }
+            }
+        }
+        
+        // Only include items that passed all hard filters
+        if result.PassedHardFilters {
+            result.PriorityScore = fe.calculatePriorityScore(result.SoftFilterResults)
+            results = append(results, result)
+        }
+    }
+    
+    // Sort results: higher priority score = better match
+    sort.Slice(results, func(i, j int) bool {
+        if results[i].PriorityScore != results[j].PriorityScore {
+            return results[i].PriorityScore > results[j].PriorityScore
+        }
+        // Tie-breaker: fewer violations is better
+        return results[i].ViolationCount < results[j].ViolationCount
+    })
+    
+    return results, nil
+}
+
+func (fe *FilterEngine) calculatePriorityScore(softResults []SoftFilterResult) float64 {
+    score := 0.0
+    totalWeight := 0.0
+    
+    for _, result := range softResults {
+        // Earlier filters (lower priority number) have higher weight
+        weight := 1.0 / float64(result.Priority + 1)
+        totalWeight += weight
+        
+        if result.Passed {
+            score += weight
+        }
+    }
+    
+    if totalWeight == 0 {
+        return 1.0 // No soft filters = perfect score
+    }
+    
+    return score / totalWeight
+}
+
+func (fe *FilterEngine) evaluateFilter(ctx context.Context, item ListItem, filter FilterItem) bool {
+    switch filter.Type {
+    case "category":
+        criteria := filter.Criteria.(CategoryFilterCriteria)
+        return fe.evaluateCategoryFilter(item, criteria)
+    case "dietary":
+        criteria := filter.Criteria.(DietaryFilterCriteria)
+        return fe.evaluateDietaryFilter(item, criteria)
+    case "location":
+        criteria := filter.Criteria.(LocationFilterCriteria)
+        return fe.evaluateLocationFilter(item, criteria)
+    case "recent_activity":
+        criteria := filter.Criteria.(RecentActivityFilterCriteria)
+        return fe.evaluateRecentActivityFilter(ctx, item, criteria)
+    case "opening_hours":
+        criteria := filter.Criteria.(OpeningHoursFilterCriteria)
+        return fe.evaluateOpeningHoursFilter(item, criteria)
+    case "tags":
+        criteria := filter.Criteria.(TagFilterCriteria)
+        return fe.evaluateTagFilter(item, criteria)
+    default:
+        return true // Unknown filter types pass by default
+    }
+}
+
+// Specific filter criteria types
+type CategoryFilterCriteria struct {
+    IncludeCategories []string `json:"include_categories"`
+    ExcludeCategories []string `json:"exclude_categories"`
+}
+
+type DietaryFilterCriteria struct {
+    RequiredOptions []string `json:"required_options"` // ["vegetarian", "vegan", "gluten_free"]
+}
+
+type LocationFilterCriteria struct {
+    CenterLat    float64 `json:"center_lat"`
+    CenterLng    float64 `json:"center_lng"`
+    MaxDistance  float64 `json:"max_distance"` // in miles
+}
+
+type RecentActivityFilterCriteria struct {
+    ExcludeDays int      `json:"exclude_days"`
+    UserID      string   `json:"user_id"`
+    TribeID     *string  `json:"tribe_id"`
+}
+
+type OpeningHoursFilterCriteria struct {
+    MustBeOpenFor int `json:"must_be_open_for"` // minutes from now
+}
+
+type TagFilterCriteria struct {
+    RequiredTags []string `json:"required_tags"`
+    ExcludedTags []string `json:"excluded_tags"`
+}
+```
+
+### Filter Configuration Storage
+
+```sql
+-- Add to schema for storing user filter configurations
+CREATE TABLE filter_configurations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL, -- "Date Night Filters", "Quick Lunch", etc.
+    is_default BOOLEAN DEFAULT FALSE,
+    configuration JSONB NOT NULL, -- FilterConfiguration JSON
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+### Frontend Filter Management
+
+```typescript
+// Filter Management Interface
+interface FilterItem {
+  id: string;
+  type: 'category' | 'dietary' | 'location' | 'recent_activity' | 'opening_hours' | 'tags';
+  isHard: boolean;
+  priority: number;
+  criteria: any;
+  description: string;
+}
+
+interface FilterConfiguration {
+  items: FilterItem[];
+  userId: string;
+}
+
+// Filter Builder Component Props
+interface FilterBuilderProps {
+  configuration: FilterConfiguration;
+  onConfigurationChange: (config: FilterConfiguration) => void;
+  availableFilters: FilterType[];
+}
+
+// Filter Result Display
+interface FilterResultDisplayProps {
+  results: FilterResult[];
+  showViolations: boolean;
+  onItemSelect: (item: ListItem) => void;
+}
+
+// Enhanced GraphQL types for filtering
+type FilterResult {
+  item: ListItem!
+  passedHardFilters: Boolean!
+  softFilterResults: [SoftFilterResult!]!
+  violationCount: Int!
+  priorityScore: Float!
+}
+
+type SoftFilterResult {
+  filterId: String!
+  filterType: String!
+  passed: Boolean!
+  priority: Int!
+  description: String!
+}
+```
 
 ### Default Parameters
 ```go
@@ -627,91 +895,6 @@ type TribeDecisionPreferences struct {
     DefaultM int `json:"default_m"` // Configurable per tribe
     MaxK     int `json:"max_k"`     // Maximum eliminations allowed
     MaxM     int `json:"max_m"`     // Maximum final options allowed
-}
-```
-
-### Parameter Reduction Algorithm
-```go
-func (da *DecisionAlgorithm) AdjustParametersForResultCount(k, m, n, resultCount int) (int, int, error) {
-    if resultCount == 0 {
-        return 0, 0, errors.New("no results available for decision")
-    }
-    
-    // Apply reduction algorithm when K*N + M > resultCount
-    for k*n + m > resultCount {
-        // Step 1: If K > 2, reduce K by 1
-        if k > 2 {
-            k--
-            continue
-        }
-        
-        // Step 2: If M > 3, reduce M by 1
-        if m > 3 {
-            m--
-            continue
-        }
-        
-        // Step 3: If K > 1, reduce K by 1
-        if k > 1 {
-            k--
-            continue
-        }
-        
-        // Step 4: If M > 1, reduce M by 1
-        if m > 1 {
-            m--
-            continue
-        }
-        
-        // Final fallback: K=0, M=resultCount
-        k = 0
-        m = resultCount
-        break
-    }
-    
-    return k, m, nil
-}
-
-func (da *DecisionAlgorithm) SuggestOptimalParams(availableCount, tribeSize int, preferences TribeDecisionPreferences) (int, int, error) {
-    k := preferences.DefaultK
-    m := preferences.DefaultM
-    n := tribeSize
-    
-    // Apply reduction algorithm if needed
-    adjustedK, adjustedM, err := da.AdjustParametersForResultCount(k, m, n, availableCount)
-    if err != nil {
-        return 0, 0, err
-    }
-    
-    return adjustedK, adjustedM, nil
-}
-```
-
-### Tribe Departure Handling
-```go
-type TribeDepartureOptions struct {
-    PreserveSharedLists bool `json:"preserve_shared_lists"` // User choice on departure
-}
-
-func (s *TribeService) HandleUserDeparture(ctx context.Context, userID, tribeID string, options TribeDepartureOptions) error {
-    // 1. Remove user from tribe membership
-    if err := s.removeTribeMembership(ctx, userID, tribeID); err != nil {
-        return err
-    }
-    
-    // 2. Handle list shares based on user preference
-    if !options.PreserveSharedLists {
-        // Remove all shares of user's lists with this tribe
-        if err := s.revokeUserListShares(ctx, userID, tribeID); err != nil {
-            return err
-        }
-    }
-    
-    // 3. User automatically loses access to:
-    // - Tribe's internal lists (handled by membership removal)
-    // - Lists shared with tribe (unless separately shared with user)
-    
-    return nil
 }
 ```
 

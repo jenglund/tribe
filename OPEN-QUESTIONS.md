@@ -37,53 +37,23 @@ This document contains ambiguities, unclear specifications, unresolved questions
     - Implements same interface as OAuth providers
 
 ### Session Management
-- [ ] **Analysis needed**: JWT tokens vs session cookies vs hybrid approach
-
-#### Detailed Comparison
-
-**JWT Tokens (Stateless)**
-- **Pros**: 
-  - Stateless - no server-side session storage needed
-  - Works well with microservices (if we scale later)
-  - Contains user claims directly
-  - Works across multiple devices naturally
-- **Cons**: 
-  - Cannot revoke until expiration
-  - Larger payload in every request
-  - Need refresh token mechanism for security
-- **Our Use Case Fit**: ⭐⭐⭐⭐ (Good - supports concurrent devices, simple for monolith)
-
-**Session Cookies (Stateful)**
-- **Pros**: 
-  - Can revoke immediately 
-  - Smaller request overhead
-  - More secure for sensitive apps
-  - Traditional web app approach
-- **Cons**: 
-  - Requires server-side session storage (Redis/DB)
-  - More complex for multiple devices
-  - Additional infrastructure dependency
-- **Our Use Case Fit**: ⭐⭐⭐ (Okay - more complex for our scale)
-
-**Hybrid Approach (JWT + Refresh Tokens)**
-- **Pros**: 
-  - Short-lived JWTs (15-30 min) with refresh tokens
-  - Can revoke refresh tokens
-  - Good security/usability balance
-- **Cons**: 
-  - Most complex implementation
-  - Still need some server-side storage for refresh tokens
-- **Our Use Case Fit**: ⭐⭐⭐⭐⭐ (Best - security + usability + supports our needs)
-
-**Recommendation**: Hybrid approach with:
-- Short-lived JWT access tokens (30 minutes)
-- Longer-lived refresh tokens (7 days) stored server-side
-- Automatic refresh in frontend
-- Support for multiple concurrent sessions
-
+- [x] **Decision made**: Simple JWT tokens with 7-day expiry for MVP
+  - No refresh tokens initially to reduce complexity
+  - Adding refresh tokens later is NOT a major architectural change:
+    - Core JWT validation logic stays the same
+    - Would only require: new refresh endpoint, frontend refresh logic, refresh token storage
+    - Authentication interface remains unchanged
+    - Can be added incrementally without major refactoring
 - [x] **Decision made**: Support concurrent sessions across devices
   - Users should be able to interact from desktop and mobile simultaneously
   - All valid sessions should be accepted
+
+**JWT Implementation Details:**
+- **Access Tokens**: JWT with 7-day expiry
+- **Storage**: Frontend localStorage/sessionStorage
+- **Validation**: Standard JWT signature verification
+- **Expiry Handling**: Redirect to login on token expiry
+- **Future Migration**: Can add refresh tokens without major changes
 
 ### Authorization Levels
 - [x] **Decision made**: List sharing permissions model
@@ -117,9 +87,23 @@ This document contains ambiguities, unclear specifications, unresolved questions
   - Skip algorithm if R = 0 (no valid results)
 
 ### Filtering Priority
-- [ ] **Specification needed**: Order of filter application and conflicts
-- [ ] **Question**: How to handle empty filter results - suggest relaxing which filters?
-- [ ] **Question**: Should filters be "hard" (must match) or "weighted" (prefer matches)?
+- [x] **Decision made**: User-configurable filter priority with hard/soft filter distinction
+  - **Priority Order**: Filters applied in user-defined order (earliest = highest priority)
+  - **Filter Types**: 
+    - **Hard Filters**: Must be satisfied (exclude non-matching results)
+    - **Soft Filters**: Preferred but can be relaxed (mark violations but include results)
+  - **User Interface**: Drag-and-drop list to reorder filter priority
+  - **Result Handling**: 
+    - Include all results that pass hard filters
+    - Mark soft filter violations on each result
+    - Sort results by: early soft filter satisfaction > fewer violations > original order
+  - **Violation Display**: Show which soft filters each result violates
+
+**Filter System Requirements:**
+- User can mark each filter as "hard" (required) or "soft" (preferred)
+- User can reorder filters to set priority
+- Results show soft filter violations clearly
+- Smart sorting prioritizes better matches
 
 ### Real-time vs Turn-based Elimination
 - [ ] **Major UX decision**: How should elimination rounds work?
@@ -280,7 +264,7 @@ This document contains ambiguities, unclear specifications, unresolved questions
 - Google OAuth with extensible interface
 - Dev/test login mode for development
 - Concurrent sessions supported
-- Hybrid JWT approach recommended
+- Simple JWT tokens (7-day expiry) for MVP - no refresh tokens initially
 
 **Permissions:**
 - Read-only list sharing
@@ -291,5 +275,11 @@ This document contains ambiguities, unclear specifications, unresolved questions
 **Decision Algorithm:**
 - N = tribe size, K = 2, M = 3 (configurable)
 - Reduction algorithm for insufficient results
+
+**Filter System:**
+- User-configurable priority order
+- Hard vs soft filter distinction
+- Violation tracking and smart sorting
+- Drag-and-drop filter management UI
 
 These questions should be resolved through discussion and decision-making before proceeding with detailed implementation planning. 
