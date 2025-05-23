@@ -108,20 +108,30 @@ This document contains ambiguities, unclear specifications, unresolved questions
 - Smart sorting prioritizes better matches
 
 ### Real-time vs Turn-based Elimination
-- [x] **Decision made**: Turn-based elimination with polling updates
+- [x] **Decision made**: Turn-based elimination with polling updates and quick-skip functionality
   - **One elimination per round**: Users eliminate ONE choice per round (K = number of rounds)
   - **Randomized order**: Elimination order shuffled at start and maintained (e.g., BCA → BCABCA for K=2)
   - **Shared visibility**: All participants see remaining options after each elimination
   - **Polling updates**: Client polls API every 5-10 seconds for updates
   - **Timeout handling**: 5-minute timeout per turn, then skip to next user
+  - **Quick-skip option**: Users can voluntarily skip their turn to defer until later
+  - **Skip limits**: Maximum K quick-skips per user (one per round maximum)
+  - **No double-skipping**: Cannot quick-skip a turn that was already deferred (timeout or previous quick-skip)
   - **Catch-up mechanism**: Skipped users can rejoin and apply missed eliminations at end
+  - **Catch-up timeout penalty**: If user times out during catch-up phase, they forfeit ALL remaining skipped rounds
   - **Adaptive M value**: If unresolved turns remain, increase M to accommodate extra options
 
+**Skip Types:**
+- **Quick-skip**: Voluntary skip by user choice (limited to K per user)
+- **Timeout-skip**: Automatic skip due to 5-minute timeout
+- **Forfeited**: Skipped rounds lost due to timeout during catch-up phase
+
 **Implementation Details:**
-- Session state tracks current turn, elimination order, skipped users
+- Session state tracks current turn, elimination order, skipped users with skip types
 - Polling endpoint returns current candidates and whose turn it is
 - Timeout system automatically advances turns
-- End-of-round catch-up phase for missed eliminations
+- Quick-skip validation prevents double-skipping and enforces limits
+- End-of-round catch-up phase for missed eliminations with timeout penalties
 
 ## List Item Metadata
 
@@ -132,10 +142,31 @@ This document contains ambiguities, unclear specifications, unresolved questions
   - Integration with mapping services (if any)
 
 ### Opening Hours
-- [ ] **Specification needed**: Format for storing business hours
-  - Structured JSON vs free text
-  - Timezone handling
-  - Holiday/special hours support
+- [x] **Decision made**: Structured JSON format for business hours storage
+  - Store regular weekly hours (Monday-Sunday) in JSON format
+  - All times stored as UTC/epoch on backend
+  - User timezone preferences applied in frontend for display
+  - No holiday hours support in MVP
+- [x] **Decision made**: Time-based filtering capabilities for MVP
+  - Support "closes within X minutes" filtering
+  - Support "open until X time" filtering (e.g., "open until 11PM")
+  - No location/driving distance calculations in MVP (requires Google Maps API)
+
+**Business Hours JSON Structure:**
+```json
+{
+  "regular_hours": {
+    "monday": {"open": "11:00", "close": "22:00", "closed": false},
+    "tuesday": {"open": "11:00", "close": "22:00", "closed": false},
+    "wednesday": {"open": "11:00", "close": "22:00", "closed": false},
+    "thursday": {"open": "11:00", "close": "22:00", "closed": false},
+    "friday": {"open": "11:00", "close": "23:00", "closed": false},
+    "saturday": {"open": "10:00", "close": "23:00", "closed": false},
+    "sunday": {"closed": true}
+  },
+  "timezone": "America/New_York"
+}
+```
 
 ### Item Categories and Tags
 - [ ] **Decision needed**: Predefined enums vs free-form tags
@@ -145,12 +176,12 @@ This document contains ambiguities, unclear specifications, unresolved questions
 
 ### Visit History Tracking
 - [x] **Decision made**: Flexible activity logging with tentative future entries
-  - **Any user can log**: Users can record activity for any list item, whether they participated or not
-  - **Auto-filled defaults**: Time defaults to "now", participants default to full tribe (both editable)
-  - **Decision integration**: Completing decision offers option to log "doing this now/at time X"
-  - **Tentative entries**: Future-dated activities marked as "tentative" and highlighted in UI
-  - **Confirmation workflow**: Any tribe member can confirm/cancel tentative entries
-  - **Flexible participation**: Can specify any subset of tribe members as participants
+  - Any user can log activity for any list item, whether they participated or not
+  - Auto-filled defaults: Time defaults to "now", participants default to full tribe (both editable)
+  - Decision integration: Completing decision offers option to log "doing this now/at time X"
+  - Tentative entries: Future-dated activities marked as "tentative" and highlighted in UI
+  - Confirmation workflow: Any tribe member can confirm/cancel tentative entries
+  - Flexible participation: Can specify any subset of tribe members as participants
 
 **Activity Entry Types:**
 - **Immediate**: Recorded as happening "now" (confirmed)
@@ -235,9 +266,12 @@ This document contains ambiguities, unclear specifications, unresolved questions
 ## External Integrations
 
 ### Google Maps Integration
-- [ ] **Timeline question**: When to implement external list sync?
-- [ ] **Question**: Alternative location services to reduce Google Maps dependency?
-- [ ] **Question**: Data import format and conflict resolution
+- [x] **Decision made**: Limited integration for MVP
+  - No location/driving distance calculations initially (requires paid API)
+  - May integrate for list sync in future phases
+  - Focus on manual entry and time-based filtering for MVP
+- [ ] **Future consideration**: Alternative location services to reduce Google Maps dependency
+- [ ] **Future consideration**: Data import format and conflict resolution
 
 ### Notification System
 - [ ] **Question**: Email notifications for invites, decisions, etc.?
@@ -269,21 +303,24 @@ This document contains ambiguities, unclear specifications, unresolved questions
 ### Tribe Management (Common Ownership Model)
 - [x] **Decision made**: Common ownership model for all tribe members
   - **Equal Rights**: All tribe members have equal control and permissions
-  - **No Single Owner**: Creator role is informational only, not functional
-  - **Conflict Resolution**: Longest-standing member serves as tie-breaker when needed
+  - **No Functional Roles**: No special permissions for creator or any other role
+  - **Seniority Calculation**: Senior member determined by earliest invite timestamp among active members
+  - **Creator Detection**: Creator is member where `user_id == invited_by_user_id` (self-invited at creation)
+  - **Invite Tracking**: Each membership records `invited_at`, `invited_by_user_id` for full audit trail
   - **Collective Ownership**: All members can invite, remove others, modify tribe settings
   - **Democratic Operations**: Any member can start decision sessions, create tribe lists
 
 **Edge Cases Requiring Resolution:**
-- [x] **Tribe Deletion**: Requires 100% consensus of all members
-  - All members must explicitly approve tribe deletion
+- [x] **Tribe Deletion**: Requires 100% consensus of all active members
+  - All active members must explicitly approve tribe deletion
   - Deletion remains pending until all members have voted to approve
 - [x] **Malicious Member Removal**: Unanimous vote required (very high barrier)
   - Any member can petition for removal of another member
-  - Every other member (excluding the one being voted on) must agree
+  - Every other active member (excluding the one being voted on) must agree
   - Designed to be exceptional, not routine - protects against mass removal
 - [x] **Creator Departure**: System handles gracefully since creator role is non-functional
-  - Longest-standing remaining member becomes new "senior member" for tie-breaking
+  - Senior member (earliest invite among active members) serves as tie-breaker
+  - Creator status is purely historical and doesn't affect tribe operations
 - [x] **Invitation Management**: Two-stage ratification system
   - Invitees appear as "pending" members visible to all tribe members
   - Invitees see basic invite prompt but cannot access tribe details
@@ -293,7 +330,14 @@ This document contains ambiguities, unclear specifications, unresolved questions
   - Default: can petition for removal after 1 month of inactivity
   - Configurable per-tribe: 1 day to 2 years
   - After 2+ years: automatic cleanup under privacy laws (low priority)
-  - Still requires unanimous vote from other members to actually remove
+  - Still requires unanimous vote from other active members to actually remove
+  - Inactive members excluded from seniority calculations
+
+**Seniority and Creator Rules:**
+- **Seniority**: Calculated dynamically from `invited_at` timestamps of active members only
+- **Creator Detection**: `user_id == invited_by_user_id` indicates original tribe creator
+- **Tie-Breaking**: Senior member (earliest active invite) resolves conflicts when needed
+- **No Static Roles**: All role/status information derived from membership data, not stored separately
 
 **Tribe List Deletion:**
 - [x] **Decision made**: Petition + single confirmation system
@@ -354,10 +398,11 @@ This document contains ambiguities, unclear specifications, unresolved questions
 
 **Tribe Ownership:**
 - Common ownership model: all members have equal rights and control
-- Creator role is informational only, not functional
-- Senior member (longest-standing) serves as tie-breaker for conflicts
+- No functional roles: creator status is purely historical and non-functional
+- Seniority calculated dynamically from invite timestamps of active members
+- Creator detected by self-invite pattern (user_id == invited_by_user_id)
 - Democratic governance with petition and voting systems
-- Very high barriers for member removal (unanimous vote of all other members)
+- Very high barriers for member removal (unanimous vote of all other active members)
 - 100% consensus required for tribe deletion
 - Two-stage invitation system with ratification by existing members
 
@@ -387,6 +432,9 @@ This document contains ambiguities, unclear specifications, unresolved questions
 - Turn-based elimination: one item per round per user
 - Randomized elimination order maintained throughout
 - 5-minute timeouts with skip/catch-up mechanism
+- Quick-skip option: voluntary turn deferral (max K per user)
+- No double-skipping rule prevents gaming the system
+- Catch-up timeout penalty: forfeit all remaining skipped rounds
 - Adaptive M value for unresolved eliminations
 - Polling-based updates (5-10 second intervals)
 
@@ -416,6 +464,14 @@ This document contains ambiguities, unclear specifications, unresolved questions
 - No native mobile app development
 - Invitation-driven growth model - no social discoverability
 - Maximum 8 members per tribe (deliberately intimate design)
+
+**Time & Business Hours:**
+- All backend times stored as UTC/epoch timestamps
+- User timezone preferences applied in frontend for display
+- Structured JSON format for business hours (Monday-Sunday)
+- Time-based filtering: "open for X minutes" and "open until X time"
+- No holiday hours or location-based filtering in MVP
+- No Google Maps API integration for MVP (cost considerations)
 
 **Display Names:**
 - Global default display name configurable in user profile
