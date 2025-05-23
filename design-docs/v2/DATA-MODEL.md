@@ -761,3 +761,488 @@ type Subscription {
 }
 ```
 
+## Go Type Definitions
+
+### Core Entity Types
+
+```go
+// User represents a user in the system
+type User struct {
+    ID                  string    `json:"id" db:"id"`
+    Email               string    `json:"email" db:"email"`
+    Name                string    `json:"name" db:"name"`
+    DisplayName         string    `json:"display_name" db:"display_name"`
+    AvatarURL           *string   `json:"avatar_url" db:"avatar_url"`
+    OAuthProvider       string    `json:"oauth_provider" db:"oauth_provider"`
+    OAuthID             string    `json:"oauth_id" db:"oauth_id"`
+    Timezone            string    `json:"timezone" db:"timezone"`
+    DietaryPreferences  []string  `json:"dietary_preferences" db:"dietary_preferences"`
+    LocationPreferences *Location `json:"location_preferences" db:"location_preferences"`
+    EmailVerified       bool      `json:"email_verified" db:"email_verified"`
+    CreatedAt           time.Time `json:"created_at" db:"created_at"`
+    UpdatedAt           time.Time `json:"updated_at" db:"updated_at"`
+}
+
+// Tribe represents a group of users
+type Tribe struct {
+    ID                    string                     `json:"id" db:"id"`
+    Name                  string                     `json:"name" db:"name"`
+    Description           *string                    `json:"description" db:"description"`
+    CreatorID             string                     `json:"creator_id" db:"creator_id"`
+    MaxMembers            int                        `json:"max_members" db:"max_members"`
+    DecisionPreferences   *TribeDecisionPreferences  `json:"decision_preferences" db:"decision_preferences"`
+    ShowEliminationDetails bool                      `json:"show_elimination_details" db:"show_elimination_details"`
+    CreatedAt             time.Time                  `json:"created_at" db:"created_at"`
+    UpdatedAt             time.Time                  `json:"updated_at" db:"updated_at"`
+}
+
+// TribeMembership represents the relationship between users and tribes
+type TribeMembership struct {
+    ID               string     `json:"id" db:"id"`
+    TribeID          string     `json:"tribe_id" db:"tribe_id"`
+    UserID           string     `json:"user_id" db:"user_id"`
+    TribeDisplayName *string    `json:"tribe_display_name" db:"tribe_display_name"`
+    InvitedAt        time.Time  `json:"invited_at" db:"invited_at"`
+    InvitedByUserID  string     `json:"invited_by_user_id" db:"invited_by_user_id"`
+    JoinedAt         time.Time  `json:"joined_at" db:"joined_at"`
+    LastLoginAt      *time.Time `json:"last_login_at" db:"last_login_at"`
+    IsActive         bool       `json:"is_active" db:"is_active"`
+}
+
+// List represents a collection of items
+type List struct {
+    ID          string                 `json:"id" db:"id"`
+    Name        string                 `json:"name" db:"name"`
+    Description *string                `json:"description" db:"description"`
+    OwnerType   string                 `json:"owner_type" db:"owner_type"` // 'user' or 'tribe'
+    OwnerID     string                 `json:"owner_id" db:"owner_id"`
+    Category    *string                `json:"category" db:"category"`
+    Metadata    map[string]interface{} `json:"metadata" db:"metadata"`
+    CreatedAt   time.Time              `json:"created_at" db:"created_at"`
+    UpdatedAt   time.Time              `json:"updated_at" db:"updated_at"`
+}
+
+// ListItem represents an individual item within a list
+type ListItem struct {
+    ID             string                 `json:"id" db:"id"`
+    ListID         string                 `json:"list_id" db:"list_id"`
+    Name           string                 `json:"name" db:"name"`
+    Description    *string                `json:"description" db:"description"`
+    Category       *string                `json:"category" db:"category"`
+    Tags           []string               `json:"tags" db:"tags"`
+    Location       *Location              `json:"location" db:"location"`
+    BusinessInfo   *BusinessInfo          `json:"business_info" db:"business_info"`
+    DietaryInfo    *DietaryInfo           `json:"dietary_info" db:"dietary_info"`
+    ExternalID     *string                `json:"external_id" db:"external_id"`
+    AddedByUserID  string                 `json:"added_by_user_id" db:"added_by_user_id"`
+    CreatedAt      time.Time              `json:"created_at" db:"created_at"`
+    UpdatedAt      time.Time              `json:"updated_at" db:"updated_at"`
+}
+
+// Location represents geographical information
+type Location struct {
+    Address   *string  `json:"address"`
+    Latitude  *float64 `json:"latitude"`
+    Longitude *float64 `json:"longitude"`
+    City      *string  `json:"city"`
+    State     *string  `json:"state"`
+    Country   *string  `json:"country"`
+}
+
+// BusinessInfo represents business-specific information
+type BusinessInfo struct {
+    Type         *string       `json:"type"`
+    Phone        *string       `json:"phone"`
+    Website      *string       `json:"website"`
+    PriceRange   *string       `json:"price_range"`
+    RegularHours *RegularHours `json:"regular_hours"`
+    Timezone     *string       `json:"timezone"`
+    Notes        *string       `json:"notes"`
+}
+
+// RegularHours represents business operating hours
+type RegularHours struct {
+    Monday    *DayHours `json:"monday"`
+    Tuesday   *DayHours `json:"tuesday"`
+    Wednesday *DayHours `json:"wednesday"`
+    Thursday  *DayHours `json:"thursday"`
+    Friday    *DayHours `json:"friday"`
+    Saturday  *DayHours `json:"saturday"`
+    Sunday    *DayHours `json:"sunday"`
+}
+
+// DayHours represents operating hours for a specific day
+type DayHours struct {
+    Open   *string `json:"open"`   // "HH:MM" format
+    Close  *string `json:"close"`  // "HH:MM" format
+    Closed bool    `json:"closed"`
+}
+
+// DietaryInfo represents dietary restriction information
+type DietaryInfo struct {
+    Vegetarian  bool     `json:"vegetarian"`
+    Vegan       bool     `json:"vegan"`
+    GlutenFree  bool     `json:"gluten_free"`
+    CustomTags  []string `json:"custom_tags"`
+}
+```
+
+### Decision Making Types
+
+```go
+// DecisionSession represents a collaborative decision-making session
+type DecisionSession struct {
+    ID                     string                 `json:"id" db:"id"`
+    TribeID                string                 `json:"tribe_id" db:"tribe_id"`
+    Name                   *string                `json:"name" db:"name"`
+    Status                 string                 `json:"status" db:"status"`
+    Filters                map[string]interface{} `json:"filters" db:"filters"`
+    AlgorithmParams        *AlgorithmParams       `json:"algorithm_params" db:"algorithm_params"`
+    EliminationOrder       []string               `json:"elimination_order" db:"elimination_order"`
+    CurrentTurnIndex       int                    `json:"current_turn_index" db:"current_turn_index"`
+    CurrentRound           int                    `json:"current_round" db:"current_round"`
+    TurnStartedAt          *time.Time             `json:"turn_started_at" db:"turn_started_at"`
+    TurnTimeoutMinutes     int                    `json:"turn_timeout_minutes" db:"turn_timeout_minutes"`
+    SessionTimeoutMinutes  int                    `json:"session_timeout_minutes" db:"session_timeout_minutes"`
+    LastActivityAt         time.Time              `json:"last_activity_at" db:"last_activity_at"`
+    SkippedUsers           []SkippedTurn          `json:"skipped_users" db:"skipped_users"`
+    UserSkipCounts         map[string]int         `json:"user_skip_counts" db:"user_skip_counts"`
+    InitialCandidates      []string               `json:"initial_candidates" db:"initial_candidates"`
+    CurrentCandidates      []string               `json:"current_candidates" db:"current_candidates"`
+    FinalSelectionID       *string                `json:"final_selection_id" db:"final_selection_id"`
+    RunnersUp              []string               `json:"runners_up" db:"runners_up"`
+    EliminationHistory     []map[string]interface{} `json:"elimination_history" db:"elimination_history"`
+    IsPinned               bool                   `json:"is_pinned" db:"is_pinned"`
+    CreatedByUserID        string                 `json:"created_by_user_id" db:"created_by_user_id"`
+    CreatedAt              time.Time              `json:"created_at" db:"created_at"`
+    UpdatedAt              time.Time              `json:"updated_at" db:"updated_at"`
+    CompletedAt            *time.Time             `json:"completed_at" db:"completed_at"`
+    ExpiresAt              *time.Time             `json:"expires_at" db:"expires_at"`
+}
+
+// AlgorithmParams represents K+M elimination algorithm parameters
+type AlgorithmParams struct {
+    K            int `json:"k"`             // Eliminations per person
+    N            int `json:"n"`             // Number of participants
+    M            int `json:"m"`             // Final choices for random selection
+    InitialCount int `json:"initial_count"` // Total initial candidates
+}
+
+// TribeDecisionPreferences represents tribe-specific decision settings
+type TribeDecisionPreferences struct {
+    DefaultK int `json:"default_k"`
+    DefaultM int `json:"default_m"`
+    MaxK     int `json:"max_k"`
+    MaxM     int `json:"max_m"`
+}
+
+// SkippedTurn represents a turn that was skipped during elimination
+type SkippedTurn struct {
+    UserID      string    `json:"user_id"`
+    Round       int       `json:"round"`
+    TurnInRound int       `json:"turn_in_round"`
+    SkipType    string    `json:"skip_type"` // "quick_skip", "timeout_skip", "forfeited"
+    SkippedAt   time.Time `json:"skipped_at"`
+}
+
+// EliminationStatus represents the current state of an elimination session
+type EliminationStatus struct {
+    SessionID         string        `json:"session_id"`
+    CurrentCandidates []string      `json:"current_candidates"`
+    CurrentUserTurn   *string       `json:"current_user_turn"`
+    IsYourTurn        bool          `json:"is_your_turn"`
+    CurrentRound      int           `json:"current_round"`
+    TurnTimeRemaining time.Duration `json:"turn_time_remaining"`
+    EliminationOrder  []string      `json:"elimination_order"`
+    SkippedUsers      []SkippedTurn `json:"skipped_users"`
+    CanQuickSkip      bool          `json:"can_quick_skip"`
+    QuickSkipsUsed    int           `json:"quick_skips_used"`
+    QuickSkipsLimit   int           `json:"quick_skips_limit"`
+    IsCatchUpPhase    bool          `json:"is_catch_up_phase"`
+}
+
+// DecisionElimination represents an eliminated item in a decision session
+type DecisionElimination struct {
+    ID           string    `json:"id" db:"id"`
+    SessionID    string    `json:"session_id" db:"session_id"`
+    UserID       string    `json:"user_id" db:"user_id"`
+    ListItemID   string    `json:"list_item_id" db:"list_item_id"`
+    RoundNumber  int       `json:"round_number" db:"round_number"`
+    EliminatedAt time.Time `json:"eliminated_at" db:"eliminated_at"`
+}
+```
+
+### Filtering System Types
+
+```go
+// FilterItem represents a single filter with its criteria
+type FilterItem struct {
+    ID          string      `json:"id"`
+    Type        string      `json:"type"`        // Filter category
+    IsHard      bool        `json:"is_hard"`     // Required vs preferred
+    Priority    int         `json:"priority"`    // Execution order (0 = highest)
+    Criteria    interface{} `json:"criteria"`    // Type-specific data
+    Description string      `json:"description"` // Human-readable description
+}
+
+// FilterConfiguration represents a complete filter setup
+type FilterConfiguration struct {
+    Items  []FilterItem `json:"items"`
+    UserID string       `json:"user_id"`
+}
+
+// CategoryFilterCriteria for filtering by item categories
+type CategoryFilterCriteria struct {
+    IncludeCategories []string `json:"include_categories"`
+    ExcludeCategories []string `json:"exclude_categories"`
+}
+
+// DietaryFilterCriteria for filtering by dietary restrictions
+type DietaryFilterCriteria struct {
+    RequiredOptions []string `json:"required_options"` // ["vegetarian", "vegan", "gluten_free"]
+}
+
+// LocationFilterCriteria for geographic filtering
+type LocationFilterCriteria struct {
+    CenterLat   float64 `json:"center_lat"`
+    CenterLng   float64 `json:"center_lng"`
+    MaxDistance float64 `json:"max_distance"` // in miles
+}
+
+// RecentActivityFilterCriteria for excluding recently visited items
+type RecentActivityFilterCriteria struct {
+    ExcludeDays int     `json:"exclude_days"`
+    UserID      string  `json:"user_id"`
+    TribeID     *string `json:"tribe_id"`
+}
+
+// OpeningHoursFilterCriteria for business hours filtering
+type OpeningHoursFilterCriteria struct {
+    MustBeOpenFor   int     `json:"must_be_open_for"`   // minutes from now
+    MustBeOpenUntil *string `json:"must_be_open_until"` // time in user timezone
+    UserTimezone    string  `json:"user_timezone"`      // user's timezone
+    CheckDate       *int64  `json:"check_date"`         // unix timestamp, optional
+}
+
+// TagFilterCriteria for tag-based filtering
+type TagFilterCriteria struct {
+    RequiredTags []string `json:"required_tags"`
+    ExcludedTags []string `json:"excluded_tags"`
+}
+
+// FilterResult represents the result of applying filters to an item
+type FilterResult struct {
+    Item              ListItem           `json:"item"`
+    PassedHardFilters bool               `json:"passed_hard_filters"`
+    SoftFilterResults []SoftFilterResult `json:"soft_filter_results"`
+    ViolationCount    int                `json:"violation_count"`
+    PriorityScore     float64            `json:"priority_score"`
+}
+
+// SoftFilterResult represents the result of a single soft filter
+type SoftFilterResult struct {
+    FilterID    string `json:"filter_id"`
+    FilterType  string `json:"filter_type"`
+    Passed      bool   `json:"passed"`
+    Priority    int    `json:"priority"`
+    Description string `json:"description"`
+}
+```
+
+### Activity Tracking Types
+
+```go
+// ActivityEntry represents a logged activity for a list item
+type ActivityEntry struct {
+    ID                string     `json:"id" db:"id"`
+    ListItemID        string     `json:"list_item_id" db:"list_item_id"`
+    UserID            string     `json:"user_id" db:"user_id"`
+    TribeID           *string    `json:"tribe_id" db:"tribe_id"`
+    ActivityType      string     `json:"activity_type" db:"activity_type"`         // 'visited', 'watched', 'completed'
+    ActivityStatus    string     `json:"activity_status" db:"activity_status"`     // 'confirmed', 'tentative', 'cancelled'
+    CompletedAt       time.Time  `json:"completed_at" db:"completed_at"`
+    DurationMinutes   *int       `json:"duration_minutes" db:"duration_minutes"`
+    Participants      []string   `json:"participants" db:"participants"`           // User IDs who participated
+    Notes             *string    `json:"notes" db:"notes"`
+    RecordedByUserID  string     `json:"recorded_by_user_id" db:"recorded_by_user_id"`
+    DecisionSessionID *string    `json:"decision_session_id" db:"decision_session_id"`
+    CreatedAt         time.Time  `json:"created_at" db:"created_at"`
+    UpdatedAt         time.Time  `json:"updated_at" db:"updated_at"`
+}
+
+// LogActivityRequest represents a request to log an activity
+type LogActivityRequest struct {
+    ListItemID        string     `json:"list_item_id"`
+    UserID            string     `json:"user_id"`
+    TribeID           *string    `json:"tribe_id"`
+    ActivityType      string     `json:"activity_type"`
+    ActivityStatus    string     `json:"activity_status"`
+    CompletedAt       time.Time  `json:"completed_at"`
+    DurationMinutes   *int       `json:"duration_minutes"`
+    Participants      []string   `json:"participants"`
+    Notes             *string    `json:"notes"`
+    RecordedByUserID  string     `json:"recorded_by_user_id"`
+    DecisionSessionID *string    `json:"decision_session_id"`
+}
+
+// UpdateActivityRequest represents a request to update an activity
+type UpdateActivityRequest struct {
+    ActivityStatus *string    `json:"activity_status"`
+    CompletedAt    *time.Time `json:"completed_at"`
+    Participants   []string   `json:"participants"`
+    Notes          *string    `json:"notes"`
+}
+```
+
+### Governance Types
+
+```go
+// TribeInvitation represents an invitation to join a tribe
+type TribeInvitation struct {
+    ID                         string     `json:"id" db:"id"`
+    TribeID                    string     `json:"tribe_id" db:"tribe_id"`
+    InviterID                  string     `json:"inviter_id" db:"inviter_id"`
+    InviteeEmail               string     `json:"invitee_email" db:"invitee_email"`
+    InviteeUserID              *string    `json:"invitee_user_id" db:"invitee_user_id"`
+    SuggestedTribeDisplayName  *string    `json:"suggested_tribe_display_name" db:"suggested_tribe_display_name"`
+    Status                     string     `json:"status" db:"status"` // 'pending', 'accepted_pending_ratification', 'ratified', 'rejected', 'revoked', 'expired'
+    InvitedAt                  time.Time  `json:"invited_at" db:"invited_at"`
+    AcceptedAt                 *time.Time `json:"accepted_at" db:"accepted_at"`
+    ExpiresAt                  time.Time  `json:"expires_at" db:"expires_at"`
+}
+
+// TribeInvitationRatification represents a member's vote on an invitation
+type TribeInvitationRatification struct {
+    ID           string    `json:"id" db:"id"`
+    InvitationID string    `json:"invitation_id" db:"invitation_id"`
+    MemberID     string    `json:"member_id" db:"member_id"`
+    Vote         string    `json:"vote" db:"vote"` // 'approve', 'reject'
+    VotedAt      time.Time `json:"voted_at" db:"voted_at"`
+}
+
+// MemberRemovalPetition represents a petition to remove a member
+type MemberRemovalPetition struct {
+    ID           string     `json:"id" db:"id"`
+    TribeID      string     `json:"tribe_id" db:"tribe_id"`
+    PetitionerID string     `json:"petitioner_id" db:"petitioner_id"`
+    TargetUserID string     `json:"target_user_id" db:"target_user_id"`
+    Reason       *string    `json:"reason" db:"reason"`
+    Status       string     `json:"status" db:"status"` // 'active', 'approved', 'rejected'
+    CreatedAt    time.Time  `json:"created_at" db:"created_at"`
+    ResolvedAt   *time.Time `json:"resolved_at" db:"resolved_at"`
+}
+
+// MemberRemovalVote represents a vote on a member removal petition
+type MemberRemovalVote struct {
+    ID         string    `json:"id" db:"id"`
+    PetitionID string    `json:"petition_id" db:"petition_id"`
+    VoterID    string    `json:"voter_id" db:"voter_id"`
+    Vote       string    `json:"vote" db:"vote"` // 'approve', 'reject'
+    VotedAt    time.Time `json:"voted_at" db:"voted_at"`
+}
+
+// TribeDeletionPetition represents a petition to delete a tribe
+type TribeDeletionPetition struct {
+    ID           string     `json:"id" db:"id"`
+    TribeID      string     `json:"tribe_id" db:"tribe_id"`
+    PetitionerID string     `json:"petitioner_id" db:"petitioner_id"`
+    Reason       *string    `json:"reason" db:"reason"`
+    Status       string     `json:"status" db:"status"` // 'active', 'approved', 'rejected'
+    CreatedAt    time.Time  `json:"created_at" db:"created_at"`
+    ResolvedAt   *time.Time `json:"resolved_at" db:"resolved_at"`
+}
+
+// TribeDeletionVote represents a vote on a tribe deletion petition
+type TribeDeletionVote struct {
+    ID         string    `json:"id" db:"id"`
+    PetitionID string    `json:"petition_id" db:"petition_id"`
+    VoterID    string    `json:"voter_id" db:"voter_id"`
+    Vote       string    `json:"vote" db:"vote"` // 'approve', 'reject'
+    VotedAt    time.Time `json:"voted_at" db:"voted_at"`
+}
+
+// ListDeletionPetition represents a petition to delete a list
+type ListDeletionPetition struct {
+    ID                string     `json:"id" db:"id"`
+    ListID            string     `json:"list_id" db:"list_id"`
+    PetitionerID      string     `json:"petitioner_id" db:"petitioner_id"`
+    Reason            *string    `json:"reason" db:"reason"`
+    Status            string     `json:"status" db:"status"` // 'pending', 'confirmed', 'cancelled'
+    CreatedAt         time.Time  `json:"created_at" db:"created_at"`
+    ResolvedAt        *time.Time `json:"resolved_at" db:"resolved_at"`
+    ResolvedByUserID  *string    `json:"resolved_by_user_id" db:"resolved_by_user_id"`
+}
+
+// TribeSettings represents configurable tribe settings
+type TribeSettings struct {
+    TribeID                 string    `json:"tribe_id" db:"tribe_id"`
+    InactivityThresholdDays int       `json:"inactivity_threshold_days" db:"inactivity_threshold_days"`
+    CreatedAt               time.Time `json:"created_at" db:"created_at"`
+    UpdatedAt               time.Time `json:"updated_at" db:"updated_at"`
+}
+```
+
+### Authentication Types
+
+```go
+// JWTClaims represents the claims in a JWT token
+type JWTClaims struct {
+    UserID    string `json:"user_id"`
+    Email     string `json:"email"`
+    Provider  string `json:"provider"`
+    ExpiresAt int64  `json:"exp"`
+    IssuedAt  int64  `json:"iat"`
+}
+
+// JWTConfig represents JWT configuration
+type JWTConfig struct {
+    SecretKey  string        `json:"secret_key"`
+    ExpiryTime time.Duration `json:"expiry_time"`
+    Issuer     string        `json:"issuer"`
+}
+
+// OAuthConfig represents OAuth provider configuration
+type OAuthConfig struct {
+    ClientID     string `json:"client_id"`
+    ClientSecret string `json:"client_secret"`
+    RedirectURL  string `json:"redirect_url"`
+}
+```
+
+### Shared Types
+
+```go
+// ListShare represents a shared list relationship
+type ListShare struct {
+    ID               string     `json:"id" db:"id"`
+    ListID           string     `json:"list_id" db:"list_id"`
+    SharedWithUserID *string    `json:"shared_with_user_id" db:"shared_with_user_id"`
+    SharedWithTribeID *string   `json:"shared_with_tribe_id" db:"shared_with_tribe_id"`
+    PermissionLevel  string     `json:"permission_level" db:"permission_level"`
+    SharedByUserID   string     `json:"shared_by_user_id" db:"shared_by_user_id"`
+    SharedAt         time.Time  `json:"shared_at" db:"shared_at"`
+}
+
+// DecisionSessionList represents the relationship between decision sessions and lists
+type DecisionSessionList struct {
+    ID        string `json:"id" db:"id"`
+    SessionID string `json:"session_id" db:"session_id"`
+    ListID    string `json:"list_id" db:"list_id"`
+}
+
+// FilterConfigurationSaved represents a saved filter configuration
+type FilterConfigurationSaved struct {
+    ID            string                 `json:"id" db:"id"`
+    UserID        string                 `json:"user_id" db:"user_id"`
+    Name          string                 `json:"name" db:"name"`
+    IsDefault     bool                   `json:"is_default" db:"is_default"`
+    Configuration map[string]interface{} `json:"configuration" db:"configuration"`
+    CreatedAt     time.Time              `json:"created_at" db:"created_at"`
+    UpdatedAt     time.Time              `json:"updated_at" db:"updated_at"`
+}
+```
+
+---
+
+**Note**: All type definitions in this section are authoritative. Other design documents should reference these types rather than redefining them. For implementation examples using these types, see the [implementation-examples](./implementation-examples/) directory.
+

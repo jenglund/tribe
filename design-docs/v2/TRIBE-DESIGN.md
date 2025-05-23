@@ -716,131 +716,24 @@ func (tgs *TribeGovernanceService) UpdateTribeSettings(ctx context.Context, trib
 }
 ```
 
-## Data Types
+## Data Types and Implementation
 
-```go
-// Core governance types
-type TribeInvitation struct {
-    ID               string     `json:"id"`
-    TribeID          string     `json:"tribe_id"`
-    InviterID        string     `json:"inviter_id"`
-    InviteeEmail     string     `json:"invitee_email"`
-    InviteeUserID    string     `json:"invitee_user_id,omitempty"` // Set when accepted
-    Status           string     `json:"status"` // pending, accepted_pending_ratification, ratified, rejected, expired
-    InvitedAt        time.Time  `json:"invited_at"`
-    AcceptedAt       *time.Time `json:"accepted_at,omitempty"`
-    ExpiresAt        time.Time  `json:"expires_at"`
-}
+### Type Definitions
+All type definitions for tribe governance are defined in the authoritative [DATA-MODEL.md](./DATA-MODEL.md#governance-types). Key types include:
 
-type TribeInvitationRatification struct {
-    InvitationID string    `json:"invitation_id"`
-    MemberID     string    `json:"member_id"`
-    Vote         string    `json:"vote"` // approve, reject
-    VotedAt      time.Time `json:"voted_at"`
-}
+- `TribeInvitation` - Two-stage invitation process
+- `TribeInvitationRatification` - Member voting on invitations
+- `MemberRemovalPetition` / `MemberRemovalVote` - Democratic member removal
+- `TribeDeletionPetition` / `TribeDeletionVote` - Democratic tribe deletion
+- `ListDeletionPetition` - List deletion with confirmation
+- `TribeSettings` - Configurable tribe settings
 
-type MemberRemovalPetition struct {
-    ID           string     `json:"id"`
-    TribeID      string     `json:"tribe_id"`
-    PetitionerID string     `json:"petitioner_id"`
-    TargetUserID string     `json:"target_user_id"`
-    Reason       string     `json:"reason"`
-    Status       string     `json:"status"` // active, approved, rejected
-    CreatedAt    time.Time  `json:"created_at"`
-    ResolvedAt   *time.Time `json:"resolved_at,omitempty"`
-}
-
-type MemberRemovalVote struct {
-    PetitionID string    `json:"petition_id"`
-    VoterID    string    `json:"voter_id"`
-    Vote       string    `json:"vote"` // approve, reject
-    VotedAt    time.Time `json:"voted_at"`
-}
-
-type TribeDeletionPetition struct {
-    ID           string     `json:"id"`
-    TribeID      string     `json:"tribe_id"`
-    PetitionerID string     `json:"petitioner_id"`
-    Reason       string     `json:"reason"`
-    Status       string     `json:"status"` // active, approved, rejected
-    CreatedAt    time.Time  `json:"created_at"`
-    ResolvedAt   *time.Time `json:"resolved_at,omitempty"`
-}
-
-type TribeDeletionVote struct {
-    PetitionID string    `json:"petition_id"`
-    VoterID    string    `json:"voter_id"`
-    Vote       string    `json:"vote"` // approve, reject
-    VotedAt    time.Time `json:"voted_at"`
-}
-
-type ListDeletionPetition struct {
-    ID                string     `json:"id"`
-    ListID            string     `json:"list_id"`
-    PetitionerID      string     `json:"petitioner_id"`
-    Reason            string     `json:"reason"`
-    Status            string     `json:"status"` // pending, confirmed, cancelled
-    CreatedAt         time.Time  `json:"created_at"`
-    ResolvedAt        *time.Time `json:"resolved_at,omitempty"`
-    ResolvedByUserID  *string    `json:"resolved_by_user_id,omitempty"`
-}
-
-type TribeConflict struct {
-    ID           string    `json:"id"`
-    TribeID      string    `json:"tribe_id"`
-    ConflictType string    `json:"conflict_type"`
-    ResolvedBy   string    `json:"resolved_by"`
-    Resolution   string    `json:"resolution"`
-    CreatedAt    time.Time `json:"created_at"`
-}
-
-type TribeSettings struct {
-    TribeID                string    `json:"tribe_id"`
-    MaxMembers             int       `json:"max_members"`
-    InactivityThresholdDays int       `json:"inactivity_threshold_days"`
-    CreatedAt              time.Time `json:"created_at"`
-    UpdatedAt              time.Time `json:"updated_at"`
-}
-
-type TribeUpdateRequest struct {
-    Name                    *string                `json:"name,omitempty"`
-    Description             *string                `json:"description,omitempty"`
-    MaxMembers              *int                   `json:"max_members,omitempty"`
-    InactivityThresholdDays *int                   `json:"inactivity_threshold_days,omitempty"`
-}
-
-type TribeMembership struct {
-    ID               string    `json:"id"`
-    TribeID          string    `json:"tribe_id"`
-    UserID           string    `json:"user_id"`
-    InvitedAt        time.Time `json:"invited_at"`
-    InvitedByUserID  string    `json:"invited_by_user_id"`
-    JoinedAt         time.Time `json:"joined_at"`
-    IsActive         bool      `json:"is_active"`
-    LastActiveAt     time.Time `json:"last_active_at"`
-}
-
-type Tribe struct {
-    ID          string    `json:"id"`
-    Name        string    `json:"name"`
-    Description string    `json:"description"`
-    MaxMembers  int       `json:"max_members"`
-    CreatedAt   time.Time `json:"created_at"`
-    UpdatedAt   time.Time `json:"updated_at"`
-}
-
-type User struct {
-    ID        string    `json:"id"`
-    Email     string    `json:"email"`
-    Name      string    `json:"name"`
-    CreatedAt time.Time `json:"created_at"`
-    UpdatedAt time.Time `json:"updated_at"`
-}
-```
+### Implementation Examples
+Complete service implementation examples are available in [implementation-examples/tribe-governance-service.go](./implementation-examples/tribe-governance-service.go).
 
 ## Database Schema
 
-The database tables supporting this governance system are defined in [`DATA-MODEL.md`](./DATA-MODEL.md). Key tables include:
+The database tables supporting this governance system are defined in [DATA-MODEL.md](./DATA-MODEL.md). Key tables include:
 
 - `tribes` - Basic tribe information
 - `tribe_memberships` - Member relationships with invite tracking
@@ -852,7 +745,7 @@ The database tables supporting this governance system are defined in [`DATA-MODE
 - `tribe_settings` - Configurable tribe settings
 - `tribe_conflicts` - Conflict resolution logging
 
-See [`DATA-MODEL.md`](./DATA-MODEL.md) for complete schema definitions and indexes.
+See [DATA-MODEL.md](./DATA-MODEL.md) for complete schema definitions and indexes.
 
 ## Governance Workflows
 

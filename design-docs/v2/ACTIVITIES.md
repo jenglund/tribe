@@ -2,177 +2,179 @@
 
 ## Activity History and Tracking
 
-### Activity Tracking System
+Activity tracking in Tribe allows users and tribes to log and manage activities for list items (restaurants visited, movies watched, activities completed). The system supports both confirmed (past) and tentative (planned) activities.
 
-```go
-// Enhanced activity tracking with tentative entries
-type ActivityEntry struct {
-    ID                string    `json:"id"`
-    ListItemID        string    `json:"list_item_id"`
-    UserID            string    `json:"user_id"`           // Who the activity is for
-    TribeID           *string   `json:"tribe_id"`
-    ActivityType      string    `json:"activity_type"`     // 'visited', 'watched', 'completed'
-    ActivityStatus    string    `json:"activity_status"`   // 'confirmed', 'tentative', 'cancelled'
-    CompletedAt       time.Time `json:"completed_at"`      // When it happened/will happen
-    DurationMinutes   *int      `json:"duration_minutes"`
-    Participants      []string  `json:"participants"`      // User IDs who participated
-    Notes             string    `json:"notes"`
-    RecordedByUserID  string    `json:"recorded_by_user_id"` // Who logged this
-    DecisionSessionID *string   `json:"decision_session_id"` // If from decision result
-    CreatedAt         time.Time `json:"created_at"`
-    UpdatedAt         time.Time `json:"updated_at"`
-}
+## Core Concepts
 
-type ActivityService struct {
-    db repository.Database
-}
+### Activity Types
+- **Visited** - For restaurants and physical locations
+- **Watched** - For movies, shows, and entertainment
+- **Completed** - For general activities and experiences
 
-func (as *ActivityService) LogActivity(ctx context.Context, req LogActivityRequest) (*ActivityEntry, error) {
-    entry := &ActivityEntry{
-        ID:               generateUUID(),
-        ListItemID:       req.ListItemID,
-        UserID:           req.UserID,
-        TribeID:          req.TribeID,
-        ActivityType:     req.ActivityType,
-        ActivityStatus:   req.ActivityStatus,
-        CompletedAt:      req.CompletedAt,
-        DurationMinutes:  req.DurationMinutes,
-        Participants:     req.Participants,
-        Notes:            req.Notes,
-        RecordedByUserID: req.RecordedByUserID,
-        CreatedAt:        time.Now(),
-        UpdatedAt:        time.Now(),
-    }
-    
-    // Auto-determine status based on completion time
-    if entry.ActivityStatus == "" {
-        if entry.CompletedAt.After(time.Now()) {
-            entry.ActivityStatus = "tentative"
-        } else {
-            entry.ActivityStatus = "confirmed"
-        }
-    }
-    
-    // Validate tribe membership
-    if req.TribeID != nil {
-        if err := as.validateTribeMembership(ctx, req.RecordedByUserID, *req.TribeID); err != nil {
-            return nil, err
-        }
-    }
-    
-    if err := as.db.CreateActivityEntry(ctx, entry); err != nil {
-        return nil, err
-    }
-    
-    return entry, nil
-}
+### Activity Status
+- **Confirmed** - Activity has been completed (default for past dates)
+- **Tentative** - Activity is planned for the future
+- **Cancelled** - Tentative activity that was cancelled
 
-func (as *ActivityService) UpdateTentativeActivity(ctx context.Context, entryID, userID string, req UpdateActivityRequest) (*ActivityEntry, error) {
-    entry, err := as.db.GetActivityEntry(ctx, entryID)
-    if err != nil {
-        return nil, err
-    }
-    
-    // Only allow updates to tentative entries
-    if entry.ActivityStatus != "tentative" {
-        return nil, errors.New("can only update tentative activities")
-    }
-    
-    // Verify user is in the tribe
-    if entry.TribeID != nil {
-        if err := as.validateTribeMembership(ctx, userID, *entry.TribeID); err != nil {
-            return nil, err
-        }
-    }
-    
-    // Update fields
-    if req.ActivityStatus != nil {
-        entry.ActivityStatus = *req.ActivityStatus
-    }
-    if req.CompletedAt != nil {
-        entry.CompletedAt = *req.CompletedAt
-    }
-    if req.Participants != nil {
-        entry.Participants = req.Participants
-    }
-    if req.Notes != nil {
-        entry.Notes = *req.Notes
-    }
-    
-    entry.UpdatedAt = time.Now()
-    
-    if err := as.db.UpdateActivityEntry(ctx, entry); err != nil {
-        return nil, err
-    }
-    
-    return entry, nil
-}
+### Activity Scope
+- **Personal Activities** - Individual user activities (TribeID is null)
+- **Tribe Activities** - Group activities shared within a tribe
 
-func (as *ActivityService) LogDecisionResult(ctx context.Context, sessionID, userID string, scheduledFor *time.Time) (*ActivityEntry, error) {
-    session, err := as.db.GetDecisionSession(ctx, sessionID)
-    if err != nil {
-        return nil, err
-    }
-    
-    if session.FinalSelection == nil {
-        return nil, errors.New("no final selection available")
-    }
-    
-    // Get tribe members as default participants
-    members, err := as.db.GetTribeMembers(ctx, session.TribeID)
-    if err != nil {
-        return nil, err
-    }
-    
-    participants := make([]string, len(members))
-    for i, member := range members {
-        participants[i] = member.UserID
-    }
-    
-    completedAt := time.Now()
-    status := "confirmed"
-    
-    if scheduledFor != nil {
-        completedAt = *scheduledFor
-        if completedAt.After(time.Now()) {
-            status = "tentative"
-        }
-    }
-    
-    req := LogActivityRequest{
-        ListItemID:        *session.FinalSelection,
-        UserID:            userID,
-        TribeID:           &session.TribeID,
-        ActivityType:      "visited", // Default, can be changed
-        ActivityStatus:    status,
-        CompletedAt:       completedAt,
-        Participants:      participants,
-        RecordedByUserID:  userID,
-        DecisionSessionID: &sessionID,
-    }
-    
-    return as.LogActivity(ctx, req)
-}
+## Key Features
 
-type LogActivityRequest struct {
-    ListItemID        string     `json:"list_item_id"`
-    UserID            string     `json:"user_id"`
-    TribeID           *string    `json:"tribe_id"`
-    ActivityType      string     `json:"activity_type"`
-    ActivityStatus    string     `json:"activity_status"`
-    CompletedAt       time.Time  `json:"completed_at"`
-    DurationMinutes   *int       `json:"duration_minutes"`
-    Participants      []string   `json:"participants"`
-    Notes             string     `json:"notes"`
-    RecordedByUserID  string     `json:"recorded_by_user_id"`
-    DecisionSessionID *string    `json:"decision_session_id"`
-}
+### 1. Activity Logging
+- **Automatic Status Detection** - Status determined by completion date vs. current time
+- **Participant Tracking** - Multiple users can be associated with group activities
+- **Duration Tracking** - Optional duration for time-based activities
+- **Notes and Context** - Free-form notes for additional details
+- **Decision Session Linking** - Activities can be linked to decision results
 
-type UpdateActivityRequest struct {
-    ActivityStatus *string    `json:"activity_status"`
-    CompletedAt    *time.Time `json:"completed_at"`
-    Participants   []string   `json:"participants"`
-    Notes          *string    `json:"notes"`
+### 2. Tentative Activity Management
+- **Future Planning** - Schedule activities for future dates
+- **Update Flexibility** - Modify tentative activities before completion
+- **Status Transitions** - Convert tentative to confirmed or cancelled
+- **Tribe Coordination** - Tribe members can manage shared tentative activities
+
+### 3. Activity History
+- **Personal History** - View individual activity history across all tribes
+- **List Item History** - See all activities for a specific restaurant/movie/activity
+- **Tribe Activity Feed** - View all activities within a tribe
+- **Filtering and Search** - Filter by type, status, date range, participants
+
+### 4. Decision Integration
+- **Automatic Logging** - Decision results can be automatically logged as activities
+- **Participant Inheritance** - Decision participants become activity participants
+- **Context Preservation** - Link between decision process and actual experience
+
+## Filtering Integration
+
+### Recent Activity Exclusion
+Activities are integrated with the filtering system to exclude recently visited items:
+
+- **User-Scoped Filtering** - Exclude items visited by the user recently
+- **Tribe-Scoped Filtering** - Exclude items visited by any tribe member recently
+- **Configurable Timeframe** - Customizable "recent" period (e.g., 30 days)
+- **Activity Type Awareness** - Different filters for different activity types
+
+### Filter Configuration Examples
+```json
+{
+  "type": "recent_activity",
+  "criteria": {
+    "exclude_days": 30,
+    "user_id": "user-123",
+    "tribe_id": "tribe-456",
+    "activity_types": ["visited", "watched"]
+  }
 }
 ```
 
+## Data Model
+
+### Type Definitions
+All activity-related types are defined in [DATA-MODEL.md](./DATA-MODEL.md#activity-tracking-types):
+
+- `ActivityEntry` - Core activity record
+- `LogActivityRequest` - Request structure for logging activities  
+- `UpdateActivityRequest` - Request structure for updating tentative activities
+
+### Database Schema
+Database tables are defined in [DATA-MODEL.md](./DATA-MODEL.md):
+
+- `activity_history` - Main activity tracking table
+- Relationships to `users`, `tribes`, `list_items`, and `decision_sessions`
+
+## Implementation
+
+### Service Layer
+Complete implementation examples are available in [implementation-examples/activity-service.go](./implementation-examples/activity-service.go).
+
+Key service methods:
+- `LogActivity()` - Create new activity entries
+- `UpdateTentativeActivity()` - Modify planned activities
+- `LogDecisionResult()` - Auto-log from decision sessions
+- `GetUserActivities()` - Retrieve user activity history
+- `GetListItemActivities()` - Get activities for specific items
+- `GetRecentActivities()` - Support filtering integration
+
+### API Design
+Activity APIs follow the hybrid GraphQL/REST pattern:
+
+**GraphQL Queries** (complex data retrieval):
+```graphql
+query getUserActivities($userId: ID!, $tribeId: ID) {
+  userActivities(userId: $userId, tribeId: $tribeId) {
+    id
+    listItem { name, category }
+    activityType
+    activityStatus
+    completedAt
+    participants { name }
+    notes
+  }
+}
+```
+
+**REST Endpoints** (simple operations):
+```
+POST /api/activities/log
+PUT /api/activities/{id}/confirm
+DELETE /api/activities/{id}
+```
+
+## Testing Strategy
+
+Activity tracking follows the comprehensive testing approach outlined in [TESTING.md](./TESTING.md):
+
+### Unit Tests
+- Activity service logic
+- Status determination algorithms
+- Validation rules
+- Participant management
+
+### Integration Tests
+- Database interactions
+- Tribe membership validation
+- Decision session integration
+- Filter system integration
+
+### End-to-End Tests
+- Complete activity logging flow
+- Tentative activity management
+- Multi-user activity coordination
+- Decision-to-activity workflows
+
+### Test Coverage Goals
+- **70% line coverage** for all activity-related code
+- **Complete user journey coverage** in E2E tests
+- **Edge case testing** for status transitions and validation
+
+## Future Enhancements
+
+### Activity Recommendations
+- Suggest similar items based on activity history
+- Recommend activities based on tribe preferences
+- Time-based activity suggestions (seasonal, trending)
+
+### Enhanced Analytics
+- Activity frequency analysis
+- Preference pattern recognition
+- Tribe activity insights and trends
+
+### External Integrations
+- Calendar integration for tentative activities
+- Photo/review integration for completed activities
+- Social sharing of completed activities
+
+### Advanced Filtering
+- Location-based activity exclusion
+- Preference-based activity weighting
+- Dynamic timeframe calculation (more recent = stronger exclusion)
+
+---
+
+**Related Documentation:**
+- [DATA-MODEL.md](./DATA-MODEL.md) - Complete type definitions and database schema
+- [DECISION-MAKING.md](./DECISION-MAKING.md) - Decision session integration
+- [TESTING.md](./TESTING.md) - Testing strategies and coverage goals
+- [implementation-examples/activity-service.go](./implementation-examples/activity-service.go) - Complete service implementation

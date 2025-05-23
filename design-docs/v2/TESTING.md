@@ -125,7 +125,7 @@ test('complete decision making flow', async ({ page }) => {
 ```
 
 ### Coverage Goals
-- **Backend**: 90% line coverage, 95% for critical business logic
-- **Frontend**: 85% line coverage, 90% for business components
+- **Backend**: 70% line coverage
+- **Frontend**: 70% line coverage
 - **E2E**: Cover all primary user journeys
 
