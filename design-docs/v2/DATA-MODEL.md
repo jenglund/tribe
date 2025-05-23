@@ -264,6 +264,125 @@ CREATE TABLE decision_eliminations (
 );
 ```
 
+#### Tribe Invitations Table (Enhanced Two-Stage System)
+```sql
+CREATE TABLE tribe_invitations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tribe_id UUID NOT NULL REFERENCES tribes(id) ON DELETE CASCADE,
+    inviter_id UUID NOT NULL REFERENCES users(id),
+    invitee_email VARCHAR(255) NOT NULL,
+    suggested_tribe_display_name VARCHAR(255), -- Inviter can suggest display name
+    status VARCHAR(50) DEFAULT 'pending', -- 'pending', 'accepted_pending_ratification', 'ratified', 'rejected', 'revoked', 'expired'
+    invited_at TIMESTAMPTZ DEFAULT NOW(),
+    accepted_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ DEFAULT NOW() + INTERVAL '7 days',
+    UNIQUE(tribe_id, invitee_email)
+);
+```
+
+#### Tribe Invitation Ratifications Table
+```sql
+CREATE TABLE tribe_invitation_ratifications (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    invitation_id UUID NOT NULL REFERENCES tribe_invitations(id) ON DELETE CASCADE,
+    member_id UUID NOT NULL REFERENCES users(id),
+    vote VARCHAR(50) NOT NULL, -- 'approve', 'reject'
+    voted_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(invitation_id, member_id)
+);
+```
+
+#### Member Removal Petitions Table
+```sql
+CREATE TABLE member_removal_petitions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tribe_id UUID NOT NULL REFERENCES tribes(id) ON DELETE CASCADE,
+    petitioner_id UUID NOT NULL REFERENCES users(id),
+    target_user_id UUID NOT NULL REFERENCES users(id),
+    reason TEXT,
+    status VARCHAR(50) DEFAULT 'active', -- 'active', 'approved', 'rejected'
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    resolved_at TIMESTAMPTZ,
+    UNIQUE(tribe_id, target_user_id) -- Only one active petition per user
+);
+```
+
+#### Member Removal Votes Table
+```sql
+CREATE TABLE member_removal_votes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    petition_id UUID NOT NULL REFERENCES member_removal_petitions(id) ON DELETE CASCADE,
+    voter_id UUID NOT NULL REFERENCES users(id),
+    vote VARCHAR(50) NOT NULL, -- 'approve', 'reject'
+    voted_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(petition_id, voter_id)
+);
+```
+
+#### Tribe Deletion Petitions Table
+```sql
+CREATE TABLE tribe_deletion_petitions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tribe_id UUID NOT NULL REFERENCES tribes(id) ON DELETE CASCADE,
+    petitioner_id UUID NOT NULL REFERENCES users(id),
+    reason TEXT,
+    status VARCHAR(50) DEFAULT 'active', -- 'active', 'approved', 'rejected'
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    resolved_at TIMESTAMPTZ,
+    UNIQUE(tribe_id) -- Only one active deletion petition per tribe
+);
+```
+
+#### Tribe Deletion Votes Table
+```sql
+CREATE TABLE tribe_deletion_votes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    petition_id UUID NOT NULL REFERENCES tribe_deletion_petitions(id) ON DELETE CASCADE,
+    voter_id UUID NOT NULL REFERENCES users(id),
+    vote VARCHAR(50) NOT NULL, -- 'approve', 'reject'
+    voted_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(petition_id, voter_id)
+);
+```
+
+#### List Deletion Petitions Table
+```sql
+CREATE TABLE list_deletion_petitions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    list_id UUID NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
+    petitioner_id UUID NOT NULL REFERENCES users(id),
+    reason TEXT,
+    status VARCHAR(50) DEFAULT 'pending', -- 'pending', 'confirmed', 'cancelled'
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    resolved_at TIMESTAMPTZ,
+    resolved_by_user_id UUID REFERENCES users(id),
+    UNIQUE(list_id) -- Only one active petition per list
+);
+```
+
+#### Tribe Settings Table
+```sql
+CREATE TABLE tribe_settings (
+    tribe_id UUID PRIMARY KEY REFERENCES tribes(id) ON DELETE CASCADE,
+    inactivity_threshold_days INTEGER DEFAULT 30, -- 1 to 730 (2 years)
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+#### Filter Configurations Table
+```sql
+CREATE TABLE filter_configurations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL, -- "Date Night Filters", "Quick Lunch", etc.
+    is_default BOOLEAN DEFAULT FALSE,
+    configuration JSONB NOT NULL, -- FilterConfiguration JSON
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
 ### Database Indexes
 ```sql
 -- Primary performance indexes
@@ -284,6 +403,18 @@ CREATE INDEX idx_decision_sessions_status ON decision_sessions(status);
 CREATE INDEX idx_list_shares_list ON list_shares(list_id);
 CREATE INDEX idx_list_shares_user ON list_shares(shared_with_user_id);
 CREATE INDEX idx_list_shares_tribe ON list_shares(shared_with_tribe_id);
+
+-- Governance and invitation indexes
+CREATE INDEX idx_tribe_invitations_tribe ON tribe_invitations(tribe_id);
+CREATE INDEX idx_tribe_invitations_invitee ON tribe_invitations(invitee_email);
+CREATE INDEX idx_tribe_invitations_status ON tribe_invitations(status);
+CREATE INDEX idx_tribe_invitation_ratifications_invitation ON tribe_invitation_ratifications(invitation_id);
+CREATE INDEX idx_member_removal_petitions_tribe ON member_removal_petitions(tribe_id);
+CREATE INDEX idx_member_removal_petitions_target ON member_removal_petitions(target_user_id);
+CREATE INDEX idx_member_removal_votes_petition ON member_removal_votes(petition_id);
+CREATE INDEX idx_tribe_deletion_petitions_tribe ON tribe_deletion_petitions(tribe_id);
+CREATE INDEX idx_tribe_deletion_votes_petition ON tribe_deletion_votes(petition_id);
+CREATE INDEX idx_list_deletion_petitions_list ON list_deletion_petitions(list_id);
 
 -- Filter configuration indexes
 CREATE INDEX idx_filter_configurations_user ON filter_configurations(user_id);
