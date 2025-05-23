@@ -1,0 +1,295 @@
+Let's begin by breaking down your detailed project vision into structured documents, beginning with a comprehensive and clear list of User Stories, then designing a high-level architecture and database schema tailored to your described requirements. I'll also highlight key questions and decisions you'll need to clarify for the best UX and technical implementation.
+
+Step 1: User Stories
+User Management
+As a user, I can sign up/log in using Google OAuth.
+
+As a user, I can sign up/log in via OTP sent to my email (low priority).
+
+As a user, I can log out of my session.
+
+As a user, I can delete (or soft-delete) my account.
+
+As a user, I can view and update my profile information (name, profile picture, email).
+
+Tribe Management
+As a user, I can create a Tribe (group) of 1-8 users.
+
+As a user, I can invite other users to my Tribe.
+
+As a Tribe member, I can accept or decline invitations to join Tribes.
+
+As a Tribe owner, I can remove members from my Tribe.
+
+As a Tribe member, I can leave a Tribe.
+
+As a Tribe member, I can delete (or soft-delete) my Tribe.
+
+List Management
+As a user, I can create a personal list with multiple entries (restaurants, movies, vacations).
+
+As a user, I can edit, reorder, or remove items from my personal lists.
+
+As a user, I can share my personal list with other users or Tribes.
+
+As a user, I can stop sharing my personal lists.
+
+As a Tribe member, I can create Tribe-owned lists.
+
+As a Tribe member, I can collaboratively edit Tribe lists.
+
+As a Tribe member, I can view all lists shared with the Tribe.
+
+As a Tribe member, I can remove items from Tribe-owned lists.
+
+As a user or Tribe member, I can soft-delete lists.
+
+List Item Management
+As a user, I can add list items with fields including:
+
+Name (required)
+
+Description (optional)
+
+Category (optional)
+
+Tags (optional, e.g., vegan, vegetarian, cuisine type)
+
+Location/Address (optional, for filtering by proximity)
+
+Opening hours (optional, for open-now or open-at filtering)
+
+History of visits (timestamp, attendees, optional notes)
+
+As a user, I can log visits or interactions with items, capturing date/time, attendees, and notes.
+
+Decision-Making
+As a user or Tribe, I can select multiple lists to combine into a decision-making session.
+
+As a user or Tribe, I can set decision-making filters such as:
+
+Cuisine type exclusions ("no Mexican")
+
+Vegan/vegetarian options required
+
+Distance constraints ("within 20 miles")
+
+Open hours constraints ("open for next 90 minutes")
+
+Visit history filters ("not visited in last X months")
+
+As a user or Tribe, I can request a single random selection matching filters.
+
+As a user or Tribe, I can initiate a KN+M selection:
+
+Select number of initial items generated (KN+M algorithm)
+
+Select how many each participant can eliminate (K)
+
+Select how many final choices the system randomly picks from (M)
+
+As a user, I receive clear visual and interactive prompts guiding me through the elimination process.
+
+Syncing External Data (Future/low priority)
+As a user, I can sync my "Want To Go" list from Google Maps.
+
+As a user, I can manually refresh or revoke external sync connections.
+
+Step 2: High-Level Architecture
+Frontend
+Tech Stack:
+
+React with TypeScript
+
+Axios for HTTP requests
+
+React Query or SWR for data caching/state management
+
+Tailwind CSS or similar for UI styling
+
+Shadcn/ui or similar component library for consistent UI components
+
+Structure:
+
+Authentication handling
+
+Tribe and List management UIs
+
+Decision-making workflows and interactive elimination views
+
+Real-time feedback on data validation and filter states
+
+Backend
+Tech Stack:
+
+Go (Gin or Echo framework)
+
+JWT for authentication
+
+PostgreSQL as a database
+
+Docker containers for easy local hosting
+
+Structure:
+
+RESTful API endpoints for:
+
+Authentication (OAuth, email OTP)
+
+Tribe CRUD operations
+
+User CRUD operations
+
+List and list items CRUD operations
+
+Decision-making logic endpoints
+
+Sync integration endpoints (low-priority/future)
+
+Middleware for authentication, error handling, logging
+
+Transaction management for data integrity
+
+Step 3: Database Schema
+Users
+
+id (UUID, PK)
+
+google_id (string, optional)
+
+email (string, unique)
+
+name (string)
+
+profile_image_url (string)
+
+created_at, updated_at, deleted_at
+
+Tribes
+
+id (UUID, PK)
+
+name (string)
+
+owner_id (UUID, FK Users)
+
+created_at, updated_at, deleted_at
+
+TribeMembers
+
+tribe_id (UUID, FK Tribes)
+
+user_id (UUID, FK Users)
+
+role (string: "owner", "member")
+
+joined_at
+
+Lists
+
+id (UUID, PK)
+
+owner_user_id (UUID, FK Users, nullable)
+
+owner_tribe_id (UUID, FK Tribes, nullable)
+
+name (string)
+
+description (string)
+
+is_shared (bool)
+
+created_at, updated_at, deleted_at
+
+ListShares
+
+id (UUID, PK)
+
+list_id (UUID, FK Lists)
+
+shared_with_user_id (UUID, nullable)
+
+shared_with_tribe_id (UUID, nullable)
+
+shared_at
+
+ListItems
+
+id (UUID, PK)
+
+list_id (UUID, FK Lists)
+
+name (string)
+
+description (string)
+
+category (string)
+
+tags (string[])
+
+location (geopoint/address)
+
+opening_hours (JSON or structured)
+
+created_at, updated_at, deleted_at
+
+VisitHistory
+
+id (UUID, PK)
+
+item_id (UUID, FK ListItems)
+
+visited_at (timestamp)
+
+notes (string)
+
+attendee_ids (UUID[])
+
+Step 4: Technical and UX Decisions to Address
+Technical
+Confirm soft-deletion vs. hard-deletion policy clearly.
+
+Decide on the granularity of the location data (structured address vs. lat/lon).
+
+Decide whether to support real-time updates (websockets/polling).
+
+UX
+Clearly define how users interact with decision-making UX:
+
+What does elimination UI look like?
+
+What feedback is provided when criteria yield no results?
+
+Define the interaction model clearly for list sharing:
+
+Explicit acceptances required for sharing?
+
+Accessibility considerations (color contrasts, ARIA labels, keyboard nav).
+
+Step 5: Testing Plan
+Backend API unit tests for CRUD operations.
+
+Integration tests for decision-making algorithm correctness.
+
+Error-handling tests (invalid data, access control).
+
+Frontend UI tests for key flows (login, list creation, decision-making workflow).
+
+E2E tests (Cypress/Playwright) for critical paths (sign up, Tribe setup, making decisions).
+
+Step 6: Additional Considerations
+CI/CD setup (GitHub Actions) for automated testing and deployments.
+
+Containerization (Docker) for easy local setup.
+
+Clear, comprehensive documentation for setup, contributing, and running with AI-agents (e.g., GitHub README, CONTRIBUTING.md).
+
+Next Steps:
+Confirm/correct the schema and user stories.
+
+Prioritize MVP features for early implementation.
+
+Establish a basic UI/UX mockup and API contract to guide implementation.
+
+Write comprehensive docs guiding AI agents on contributions clearly.
+

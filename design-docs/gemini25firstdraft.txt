@@ -1,0 +1,233 @@
+Okay, Jake, this "Tribe" app sounds like a really interesting project, especially with the collaborative decision-making core! Let's break down your ideas into a more structured plan, covering user stories, system design, and development considerations.
+
+User Stories for Tribe
+Here's a list of user stories, categorized for clarity:
+
+👤 User Account & Authentication
+As a new user, I want to sign up using my Google account so I can quickly create an account and start using Tribe.
+(Low Priority) As a new user, I want to sign up using a one-time password (OTP) sent to my email as an alternative to social logins.
+As an existing user, I want to log in using my Google account.
+(Low Priority) As an existing user, I want to log in using an OTP sent to my email.
+As a user, I want to log out of my account.
+As a user, I want to view and update my basic profile information (e.g., display name).
+As a user, I want to be able to (soft) delete my account, removing my data from the active system.
+👥 Tribe Management
+As a user, I want to create a new Tribe and give it a name.
+As the creator of a Tribe, I want to invite other registered users to join my Tribe (up to a maximum of 8 total members).
+As a user, I want to receive and see invitations to join Tribes.
+As a user, I want to accept or decline an invitation to join a Tribe.
+As a Tribe member, I want to view the list of members in my Tribes.
+As a Tribe creator/admin, I want to remove a member from a Tribe I manage.
+As a Tribe member, I want to leave a Tribe.
+As a Tribe creator/admin, I want to (soft) delete a Tribe I manage, which would also archive its associated data.
+As a user, I want to see a list of all Tribes I am a member of.
+🗒️ List Management (Personal & Tribe)
+As a user, I want to create a personal list (e.g., "Albert's & My Favorite Restaurants," "Weekend Activity Ideas").
+As a user, I want to add items to my personal lists, including details like name, description, and relevant attributes (e.g., cuisine type for restaurants, genre for movies).
+As a user, I want to edit items in my personal lists.
+As a user, I want to remove items from my personal lists.
+As a user, I want to view all my personal lists and their items.
+As a user, I want to (soft) delete my personal lists.
+As a Tribe member, I want to create a new list that belongs to the Tribe, and is editable by all tribe members.
+As a Tribe member, I want to add items to a Tribe list.
+As a Tribe member, I want to edit items in a Tribe list.
+As a Tribe member, I want to remove items from a Tribe list.
+As a Tribe member, I want to view all lists belonging to my Tribes.
+As a Tribe member (perhaps admin only for deletion), I want to (soft) delete a Tribe list.
+🔗 List Sharing
+As a user, I want to share my personal list with specific other users of Tribe.
+As a user, I want to share my personal list with a Tribe I belong to, making it visible to all members of that Tribe.
+As a user, I want to see lists that have been shared directly with me or with Tribes I'm a part of.
+As the owner of a personal list, I want to manage who I've shared my list with and be able to unshare it.
+🤔 Decision Making & Filtering
+As a user (individually or with my Tribe), I want to select one or more lists (my personal lists, lists shared with me, Tribe lists) to form a combined pool of items for making a decision.
+As a user, I want to filter this combined pool of items based on various criteria, such as:
+Category/type (e.g., "no Mexican food").
+My own activity history (e.g., "not anything I've been to/done in the last 2 months").
+Other users' activity history (e.g., "not anything Albert has been to in the last 2 months" - as a soft preference).
+Specific item attributes (e.g., "needs a vegetarian/vegan option").
+Location proximity (e.g., "within 20 miles of {a specified location}").
+Current or future availability (e.g., "open for the next 90 minutes," or "open for at least 60 minutes by the time we'd arrive there").
+As a user, I want the app to allow me to log when I've "done" an item from a list (e.g., visited a restaurant, watched a movie), who I was with, and the date, to power the history-based filters.
+As a user, I want to request a randomly selected item from the filtered list.
+As a user (or group of users), I want to initiate a "structured selection" process (KN+M model) by specifying K (eliminations per person), N (number of people), and M (final choices for system/random pick).
+Example: For you and Albert (N=2), present 5 options (N*K+M = 2*2+1 = 5, if K=2, M=1).
+As a participant in a structured selection, I want to be presented with the initial set of options and be able to eliminate K options.
+As a user, I want the system to be able to dynamically suggest K and M values based on the number of available filtered results and my/our preferences (e.g., for N=2, K>0, M<=3).
+As a user, I want to see the final selected item(s) from the decision process.
+As a user, I want the option to log the outcome of a decision process back to the item's history.
+🔄 External List Sync (Future - Low Priority)
+As a user, I want to (eventually) be able to connect to external services like Google Maps to import my "Want To Go" list.
+As a user, I want to manage settings for any linked external lists, including triggering a manual sync or seeing sync status.
+High-Level Design & Architecture
+Your preference for Go (backend), React with TypeScript (frontend), and PostgreSQL (database) is a solid foundation.
+
+🏛️ Core Components
+Frontend (React + TypeScript):
+Handles all user interface and interaction.
+Communicates with the backend via a RESTful or GraphQL API.
+Manages client-side state (user session, UI state, fetched data).
+Initiates OAuth flows.
+Backend (Go):
+Exposes API endpoints for all app functionalities.
+Handles business logic: authentication, authorization, list management, tribe operations, complex filtering, and the KN+M decision algorithm.
+Interacts with the PostgreSQL database for data persistence.
+Validates OAuth tokens and manages user sessions (e.g., JWTs).
+Database (PostgreSQL):
+Stores all application data.
+Utilizes transactions for atomic operations.
+Indexed appropriately for efficient querying, especially for filtering.
+📄 Data Model (PostgreSQL Tables)
+Here's a potential schema. UUIDs are generally good for primary keys if you want to avoid sequential IDs or plan for distributed systems, but auto-incrementing integers are simpler for a small scale.
+
+users
+
+id (UUID PRIMARY KEY or SERIAL PRIMARY KEY)
+email (VARCHAR(255) UNIQUE, nullable if primarily OAuth)
+oauth_provider (VARCHAR(50), e.g., 'google')
+oauth_id (VARCHAR(255), unique per provider)
+display_name (VARCHAR(100), nullable)
+created_at (TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)
+updated_at (TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)
+deleted_at (TIMESTAMPTZ, nullable for soft delete)
+tribes
+
+id (UUID PRIMARY KEY or SERIAL PRIMARY KEY)
+name (VARCHAR(100) NOT NULL)
+creator_id (FK to users.id NOT NULL)
+created_at (TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)
+updated_at (TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)
+deleted_at (TIMESTAMPTZ, nullable for soft delete)
+tribe_members (Join table for many-to-many between users and tribes)
+
+tribe_id (FK to tribes.id, PK)
+user_id (FK to users.id, PK)
+role (VARCHAR(20) DEFAULT 'member', e.g., 'admin', 'member')
+joined_at (TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)
+PRIMARY KEY (tribe_id, user_id)
+lists
+
+id (UUID PRIMARY KEY or SERIAL PRIMARY KEY)
+name (VARCHAR(150) NOT NULL)
+owner_user_id (FK to users.id, nullable)
+owner_tribe_id (FK to tribes.id, nullable)
+list_visibility_type (VARCHAR(20) NOT NULL, e.g., 'personal', 'tribe_shared', 'private_tribe_list')
+Constraint: (owner_user_id IS NOT NULL AND owner_tribe_id IS NULL) OR (owner_user_id IS NULL AND owner_tribe_id IS NOT NULL)
+description (TEXT, nullable)
+created_at (TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)
+updated_at (TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)
+deleted_at (TIMESTAMPTZ, nullable for soft delete)
+list_items
+
+id (UUID PRIMARY KEY or SERIAL PRIMARY KEY)
+list_id (FK to lists.id NOT NULL)
+name (VARCHAR(255) NOT NULL)
+description (TEXT, nullable)
+item_type (VARCHAR(50), e.g., 'restaurant', 'movie', 'book', 'activity', 'place_to_visit')
+attributes (JSONB, for flexible fields like address, cuisine, URL, hours, status, etc.)
+Example for item_type: 'restaurant': {"cuisine": "Italian", "address": "123 Main St", "latitude": 40.7128, "longitude": -74.0060, "vegetarian_options": true, "opening_hours_text": "Mon-Fri 9am-10pm"}
+added_by_user_id (FK to users.id, relevant for tribe lists)
+created_at (TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)
+updated_at (TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)
+item_activity_log (Tracks user interactions with list items, like visits)
+
+id (UUID PRIMARY KEY or SERIAL PRIMARY KEY)
+list_item_id (FK to list_items.id NOT NULL)
+user_id (FK to users.id NOT NULL)
+activity_type (VARCHAR(50) DEFAULT 'visited', e.g., 'visited', 'watched', 'completed')
+activity_date (DATE NOT NULL)
+companions (JSONB, nullable, e.g., [{"user_id": "uuid", "name": "Albert"}, {"name": "VRK"}])
+notes (TEXT, nullable)
+logged_at (TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)
+list_shares (For sharing personal lists with other users or tribes)
+
+id (UUID PRIMARY KEY or SERIAL PRIMARY KEY)
+list_id (FK to lists.id NOT NULL - should be a personal list)
+shared_by_user_id (FK to users.id NOT NULL)
+shared_with_user_id (FK to users.id, nullable)
+shared_with_tribe_id (FK to tribes.id, nullable)
+permission_level (VARCHAR(20) DEFAULT 'view_only' NOT NULL)
+shared_at (TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)
+Constraint: (shared_with_user_id IS NOT NULL AND shared_with_tribe_id IS NULL) OR (shared_with_user_id IS NULL AND shared_with_tribe_id IS NOT NULL)
+Unique constraint: (list_id, shared_with_user_id) and (list_id, shared_with_tribe_id)
+decision_sessions (To track an active or completed decision-making process)
+
+id (UUID PRIMARY KEY)
+initiated_by_user_id (FK to users.id NOT NULL)
+tribe_id (FK to tribes.id, nullable, if it's a tribe decision)
+parameters (JSONB, e.g., {"k": 2, "n": 2, "m": 1, "source_list_ids": ["uuid1", "uuid2"], "filters": {...}})
+status (VARCHAR(30) NOT NULL, e.g., 'pending_input', 'processing_eliminations', 'completed', 'aborted')
+initial_candidates (JSONB, array of list_item_ids)
+current_candidates (JSONB, array of list_item_ids after eliminations)
+final_selection_item_id (FK to list_items.id, nullable)
+created_at (TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)
+updated_at (TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)
+decision_session_participants (Tracks users involved in a decision and their actions)
+
+id (UUID PRIMARY KEY or SERIAL PRIMARY KEY)
+decision_session_id (FK to decision_sessions.id NOT NULL)
+user_id (FK to users.id NOT NULL)
+eliminated_item_ids (JSONB, array of list_item_ids this user eliminated in a round)
+action_timestamp (TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)
+Key Backend Logic Areas
+Filtering Engine: This will be a significant piece. It needs to parse filter criteria, query the database (joining list_items with item_activity_log for history checks, and potentially handling geo-queries if addresses/coordinates are reliable).
+KN+M Selection Process:
+Receive N (participants), K (eliminations/person), M (final choices), list IDs, filters.
+Apply filters to get candidate items.
+If count < (N*K + M), adjust or notify.
+Present (N*K + M) items.
+Collect K eliminations from each of N participants. This may need a stateful way to manage whose turn it is, or allow asynchronous input up to K items.
+If M > 1 after eliminations, randomly select M items. If M=1, that's the result.
+Availability Check ("open for next 90 minutes"): If list_items.attributes contains structured opening hours, this logic can be implemented. The "by the time we get there" part is harder without a real-time traffic/routing API. You could simplify it by having users input an estimated travel time if they want that level of precision.
+Soft Deletion & Transactions
+Soft Deletes: Your preference for deleted_at columns is good. All queries for active data will need WHERE deleted_at IS NULL.
+Transactions: Use database transactions for any operation that involves multiple writes that must succeed or fail together (e.g., creating a Tribe and adding the creator as the first admin member). Go's database/sql package handles this well.
+Development Best Practices & AI Collaboration
+Given your plan to heavily involve AI agents:
+
+Comprehensive Project Design Documents (Like this one!):
+Overall Vision & Roadmap: What you're building, why, for whom, and key milestones.
+System Architecture: Backend, frontend, database, APIs.
+Data Models: Detailed schema, relationships, constraints.
+Core Algorithms: Explanations of filtering, decision-making logic.
+API Contract: OpenAPI/Swagger specification for backend APIs. Define this before asking AI to write client or server code for an endpoint.
+Detailed Task Definitions for AI:
+"Write a Go function for the /lists POST endpoint that takes X input, validates Y, creates a new list owned by the authenticated user, and returns Z."
+Provide Go struct definitions for request/response bodies.
+Specify error handling (e.g., "return a 400 if name is missing, 500 for database errors").
+For frontend: "Create a React component using TypeScript to display a list item. Props are {name: string, description: string}. It should have a button to trigger X action."
+Test-Driven Development (TDD) is Key:
+Write tests first (or alongside): This gives the AI clear success criteria.
+Backend (Go):
+Use testing package for unit tests (mocking DB dependencies).
+Use net/http/httptest for integration tests of API endpoints.
+Frontend (React/TS):
+Jest + React Testing Library for component unit/integration tests.
+Mock API calls (e.g., with msw - Mock Service Worker).
+AI can help write test boilerplate or even draft tests based on function/component specs.
+Code Reviews: All AI-generated code must be reviewed by a human (you!).
+Version Control Discipline:
+Commit frequently.
+Consider feature branches for AI-generated code blocks until reviewed and integrated.
+Consistent Style and Linting:
+Use gofmt/goimports for Go.
+Use ESLint and Prettier for TypeScript/React. Configure these and ensure AI is prompted to follow them.
+Iterative Refinement: AI is a tool. Use it for a first pass, then iterate. Don't expect perfect, final code immediately.
+Other Considerations (Things Not To Forget)
+Real-time Interaction in Decision Making: If Albert and you are both eliminating items in the K N+M flow, how do you see each other's picks or know when it's done?
+Simple: A "refresh" button or turn-based system.
+Complex: WebSockets for live updates. Given the small user base per tribe, this might be overkill initially. A good compromise could be polling for updates during an active decision session.
+Empty States & Edge Cases:
+What if filters yield 0 results? Friendly message, suggest broader criteria.
+What if a Tribe has only 1 member? How does KN+M work (N=1)?
+Performance with Many Filters/Items: Ensure database queries are optimized with indexes, especially on foreign keys, columns used in WHERE clauses (like item_type, deleted_at), and potentially on JSONB attributes if you query them frequently.
+Location Services: For "within X miles":
+Users will need to input a location (search box for address/city, or "use my current location" via browser geolocation API).
+Backend will need to perform a geospatial query or calculation if items have lat/lon. PostgreSQL with PostGIS is excellent for this, but simple Haversine distance might be enough if precision isn't critical.
+User Experience for Complex Filters: Make it intuitive to build up filter criteria without overwhelming the user.
+Initial Onboarding: How do new users get started? Sample lists? A guided tour to create their first list or tribe?
+Error Handling: Robust error handling on both frontend and backend, with clear, user-friendly messages.
+Accessibility (a11y): Keep accessibility in mind for your React components (semantic HTML, ARIA attributes where needed, keyboard navigation).
+Configuration: For a self-hosted app, how are database connections, OAuth client IDs/secrets, etc., configured? Environment variables are common.
+Documentation for Self-Hosters: If others are to run it, you'll need setup and deployment instructions.
+This is a substantial but very achievable project, especially with your clear vision and tech choices. Focusing on the core user loop (create list -> add items -> filter -> decide) for an MVP and then layering on more features will be a good approach. Good luck!
